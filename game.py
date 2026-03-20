@@ -209,7 +209,7 @@ class State:
         # - Whether the wall overlaps with existing horizontal or vertical walls
         # - Whether the wall blocks all paths for either player to reach their goal (BFS)
         if action.orientation not in ('h', 'v'):
-            return False
+            return ValueError("Invalid wall orientation: {}".format(action.orientation))
         ...
         return False
 
