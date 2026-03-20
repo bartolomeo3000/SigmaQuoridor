@@ -5,7 +5,7 @@ class PostionAction:
         self.down = (1, 0)
         self.left = (0, -1)
         self.right = (0, 1)
-
+# cokolwiek
 class State:
     def __init__(self, boardsize = 7):
         if boardsize % 2 == 0:
