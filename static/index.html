@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SigmaQuoridor</title>
+  <style>
+    :root {
+      --bg:      #111111;
+      --surface: #1a1a1a;
+      --border:  #333333;
+      --text:    #e0e0e0;
+      --muted:   #888888;
+      --blue:    #888888;
+      --red:     #f85149;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: var(--text);
+      padding: 24px;
+    }
+
+    #layout {
+      position: relative;
+    }
+
+    #sidebar {
+      position: absolute;
+      left: calc(100% + 32px);
+      top: 0;
+      width: 196px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #board-wrap {
+      background: #1e1b18;
+      border-radius: 14px;
+      padding: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.7),
+                  0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    canvas { display: block; }
+
+    /* ── card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .card-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.4px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    /* ── player rows ── */
+    .player-entry {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+    .player-entry + .player-entry { margin-top: 4px; }
+
+    .player-entry.active-p1 {
+      background: rgba(63,185,80,0.12);
+      box-shadow: inset 0 0 0 1px rgba(63,185,80,0.35);
+    }
+    .player-entry.active-p2 {
+      background: rgba(248,81,73,0.12);
+      box-shadow: inset 0 0 0 1px rgba(248,81,73,0.35);
+    }
+
+    .pawn-dot {
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .pawn-dot.blue { background: #3fb950; box-shadow: 0 0 6px #3fb950; }
+    .pawn-dot.red  { background: var(--red);  box-shadow: 0 0 6px var(--red);  }
+
+    .player-name { font-size: 13px; font-weight: 600; flex: 1; }
+    .wall-count  { font-size: 12px; color: var(--muted); }
+
+    /* ── status ── */
+    #status-text { font-size: 14px; font-weight: 600; }
+    #status-sub  { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    /* ── button ── */
+    button {
+      width: 100%;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 9px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    button:hover { background: var(--surface); border-color: var(--muted); }
+
+    /* ── board column (board + nn panel stacked) ── */
+    #board-col {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      align-items: center;
+    }
+
+    /* ── NN channel viewer ── */
+    #nn-panel {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px 24px;
+    }
+    #nn-panel.open { display: block; }
+    #nn-panel-inner {}
+    #nn-panel h2 {
+      font-size: 15px; font-weight: 700;
+      margin-bottom: 16px; color: var(--text);
+    }
+    .nn-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+    .nn-channel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .nn-channel-name {
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1px;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .nn-channel canvas { display: block; }
+  </style>
+</head>
+<body>
+
+<div id="layout">
+
+<div id="sidebar">
+  <div class="card">
+    <div class="card-label">Players</div>
+    <div class="player-entry" id="pe-p1">
+      <div class="pawn-dot blue"></div>
+      <span class="player-name">Player 1</span>
+      <span class="wall-count" id="walls-p1"></span>
+    </div>
+    <div class="player-entry" id="pe-p2">
+      <div class="pawn-dot red"></div>
+      <span class="player-name">Player 2</span>
+      <span class="wall-count" id="walls-p2"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Status</div>
+    <div id="status-text">Loading…</div>
+    <div id="status-sub"></div>
+    <div id="status-ply" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+  </div>
+
+  <button id="btn-reset">&#x21BA; New Game</button>
+  <button id="btn-nn">&#x1F9E0; NN Channels</button>
+</div>
+
+<div id="board-col">
+  <div id="board-wrap">
+    <canvas id="board"></canvas>
+  </div>
+
+  <div id="nn-panel">
+    <div id="nn-panel-inner">
+      <h2>NN Input Channels</h2>
+      <div id="nn-note" style="font-size:11px;color:var(--muted);margin-bottom:16px"></div>
+      <div class="nn-grid" id="nn-grid"></div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ── Layout ───────────────────────────────────────────────────────────────────
+const CELL  = 62;   // cell size in px
+const GAP   = 10;   // gap between cells (wall zone)
+const STEP  = CELL + GAP;
+const CELL_R = 5;   // cell corner radius
+const LABEL = 20;   // margin for axis labels
+
+// ── Colours ──────────────────────────────────────────────────────────────────
+const CLR = {
+  cell:          '#7a6a58',
+  cellGoal1:     '#3a6e3a',   // P1 goal (top row)  — green
+  cellGoal2:     '#6e3030',   // P2 goal (bottom row) — red
+  cellLegal:     '#2a4a7a',   // legal move destination
+  cellLegalRing: '#7ab8ff',
+  wall:           '#b5611a',   // placed wall
+  wallGlow:       'rgba(181,97,26,0.55)',
+  wallHoverOk:    'rgba(220,140,40,0.62)',   // preview — legal
+  wallHoverOkGlow:'rgba(220,140,40,0.7)',
+  wallHoverBad:   'rgba(210,55,55,0.50)',    // preview — illegal
+  wallHoverBadGlow:'rgba(210,55,55,0.6)',
+  pawn1:         '#3fb950',
+  pawn2:         '#f85149',
+  pawnStroke:    'rgba(255,255,255,0.7)',
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let state        = null;
+let landing      = [];   // [{gx, gy, dir:[dx,dy]}] — legal pawn destinations
+let hoverWall    = null;  // {ax, ay, orientation} — wall slot under cursor
+let legalWallSet = new Set(); // "h:ax:ay" strings for O(1) legality lookup
+
+// ── Coordinate helpers ────────────────────────────────────────────────────────
+// Game: (0,0) = bottom-left, y increases upward.
+// Canvas: top-left origin, y increases downward → flip y.
+
+function cellOrigin(gx, gy) {
+  return { x: gx * STEP, y: (state.boardsize - 1 - gy) * STEP };
+}
+
+function canvasSize() { return state.boardsize * STEP - GAP; }
+
+function pixelToCell(px, py) {
+  // Returns {gx, gy} if pixel hits a cell, null if it's in a gap.
+  const col = Math.floor(px / STEP);
+  const row = Math.floor(py / STEP);
+  const localX = px - col * STEP;
+  const localY = py - row * STEP;
+  if (localX >= CELL || localY >= CELL) return null;   // inside a gap
+  const gy = state.boardsize - 1 - row;
+  if (col < 0 || col >= state.boardsize || gy < 0 || gy >= state.boardsize) return null;
+  return { gx: col, gy };
+}
+
+// ── Compute where each legal pawn direction actually lands ───────────────────
+function computeLanding() {
+  if (!state || state.is_finished) return [];
+  const [cx, cy] = state.current_player === 1 ? state.player1pos : state.player2pos;
+  const [ox, oy] = state.current_player === 1 ? state.player2pos : state.player1pos;
+
+  return state.legal_pawn_moves.map(([dx, dy]) => {
+    let gx, gy;
+    if (dx === 0 || dy === 0) {
+      // orthogonal: adjacent cell occupied by opponent → straight jump
+      gx = (cx + dx === ox && cy + dy === oy) ? cx + 2 * dx : cx + dx;
+      gy = (cx + dx === ox && cy + dy === oy) ? cy + 2 * dy : cy + dy;
+    } else {
+      // diagonal go-around
+      gx = cx + dx;  gy = cy + dy;
+    }
+    return { gx, gy, dir: [dx, dy] };
+  });
+}
+
+// ── Legal wall set ──────────────────────────────────────────────────────────────
+function computeLegalWallSet() {
+  if (!state || state.is_finished) return new Set();
+  return new Set(state.legal_wall_moves.map(w => `${w.orientation}:${w.x}:${w.y}`));
+}
+
+// ── Wall hit detection ────────────────────────────────────────────────────────
+// Snap mouse position to the nearest wall slot.  The hitbox of each wall is its
+// full 2-cell span; at crossing corners, the wall whose centerline is closest
+// (smallest perpendicular distance) wins — giving a symmetric 50/50 split.
+function pixelToWall(px, py) {
+  if (!state) return null;
+  const bs = state.boardsize;
+
+  // Step-local coordinates (wrap to [0, STEP))
+  const modX = ((px % STEP) + STEP) % STEP;
+  const modY = ((py % STEP) + STEP) % STEP;
+  const inHGap = modY >= CELL;   // cursor is in a horizontal gap row
+  const inVGap = modX >= CELL;   // cursor is in a vertical gap column
+  if (!inHGap && !inVGap) return null;  // squarely inside a cell tile
+
+  // Canvas gap-row / gap-col indices (0 = first gap, between canvas rows 0 and 1)
+  const gapRowIdx = Math.floor((py - CELL) / STEP);
+  const gapColIdx = Math.floor((px - CELL) / STEP);
+
+  let hCand = null, vCand = null;
+
+  if (inHGap) {
+    const ay = bs - 2 - gapRowIdx;          // game anchor row for this h-gap
+    if (ay >= 0 && ay <= bs - 2) {
+      // Nearest h-wall center-x:  cx = ax*STEP + CELL + GAP/2
+      const ax = Math.max(0, Math.min(bs - 2,
+        Math.round((px - CELL - GAP / 2) / STEP)));
+      // Confirm px is within the wall's 2-cell x-span
+      if (px >= ax * STEP && px <= ax * STEP + 2 * CELL + GAP)
+        hCand = { ax, ay, orientation: 'h' };
+    }
+  }
+
+  if (inVGap) {
+    const ax = gapColIdx;                    // game anchor col for this v-gap
+    if (ax >= 0 && ax <= bs - 2) {
+      // Nearest v-wall center-y:  cy = (bs-2-ay)*STEP + CELL + GAP/2
+      const ay = Math.max(0, Math.min(bs - 2,
+        Math.round((bs - 2) - (py - CELL - GAP / 2) / STEP)));
+      // Confirm py is within the wall's 2-cell y-span
+      const wallTop = (bs - 2 - ay) * STEP;
+      if (py >= wallTop && py <= wallTop + 2 * CELL + GAP)
+        vCand = { ax, ay, orientation: 'v' };
+    }
+  }
+
+  if (!hCand && !vCand) return null;
+  if (hCand && !vCand) return hCand;
+  if (!hCand && vCand) return vCand;
+
+  // Both candidates (crossing corner): pick by perpendicular distance to centerline,
+  // with a bias toward h-walls since horizontal placement is more common.
+  // h wins unless the cursor is strictly closer to the v centerline by > GAP/2.
+  const hCenterY = (bs - 2 - hCand.ay) * STEP + CELL + GAP / 2;
+  const vCenterX = vCand.ax * STEP + CELL + GAP / 2;
+  return Math.abs(px - vCenterX) < Math.abs(py - hCenterY) - GAP / 2 ? vCand : hCand;
+}
+
+// ── roundRect polyfill ────────────────────────────────────────────────────────
+function rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); }
+  else {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y,     x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x,     y + h, r);
+    ctx.arcTo(x,     y + h, x,     y,     r);
+    ctx.arcTo(x,     y,     x + w, y,     r);
+    ctx.closePath();
+  }
+}
+
+// ── Draw ──────────────────────────────────────────────────────────────────────
+function draw(ctx) {
+  const W = canvasSize() + LABEL;
+  const H = canvasSize() + LABEL;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#1e1b18';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(LABEL, 0);
+  drawCells(ctx);
+  drawWalls(ctx);
+  drawWallPreview(ctx);
+  drawPawns(ctx);
+  ctx.restore();
+
+  drawLabels(ctx);
+}
+
+function drawLabels(ctx) {
+  const bs = state.boardsize;
+  ctx.fillStyle = 'rgba(200,180,160,0.5)';
+  ctx.font = `${Math.round(LABEL * 0.6)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // Left side: y-axis (gy=0 at bottom)
+  for (let gy = 0; gy < bs; gy++) {
+    const cy = (bs - 1 - gy) * STEP + CELL / 2;
+    ctx.fillText(String(gy), LABEL / 2, cy);
+  }
+  // Bottom: x-axis (gx=0 at left)
+  for (let gx = 0; gx < bs; gx++) {
+    const cx = LABEL + gx * STEP + CELL / 2;
+    ctx.fillText(String(gx), cx, canvasSize() + LABEL / 2);
+  }
+}
+
+function drawCells(ctx) {
+  const bs = state.boardsize;
+  const legalSet = new Set(landing.map(l => `${l.gx},${l.gy}`));
+
+  for (let gy = 0; gy < bs; gy++) {
+    for (let gx = 0; gx < bs; gx++) {
+      const { x, y } = cellOrigin(gx, gy);
+      const key = `${gx},${gy}`;
+      const isLegal = legalSet.has(key);
+
+      const fill = gy === bs - 1 ? CLR.cellGoal1
+                 : gy === 0      ? CLR.cellGoal2
+                 :                 CLR.cell;
+
+      rrect(ctx, x, y, CELL, CELL, CELL_R);
+      ctx.fillStyle = fill;
+      ctx.fill();
+
+      if (isLegal) {
+        // Subtle bright overlay on top of the tile's own color
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+// Draw one wall rectangle (h or v) given anchor coords.
+// fill / shadowColor should be set before calling.
+function drawOneWall(ctx, ax, ay, orientation) {
+  const bs = state.boardsize;
+  if (orientation === 'h') {
+    rrect(ctx, ax * STEP, (bs - 2 - ay) * STEP + CELL, 2 * CELL + GAP, GAP, 3);
+  } else {
+    rrect(ctx, ax * STEP + CELL, (bs - 2 - ay) * STEP, GAP, 2 * CELL + GAP, 3);
+  }
+  ctx.fill();
+}
+
+function drawWalls(ctx) {
+  ctx.shadowBlur = 6;
+  ctx.fillStyle   = CLR.wall;
+  ctx.shadowColor = CLR.wallGlow;
+  for (const [ax, ay] of state.hwall_anchors) drawOneWall(ctx, ax, ay, 'h');
+  for (const [ax, ay] of state.vwall_anchors) drawOneWall(ctx, ax, ay, 'v');
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur  = 0;
+}
+
+function drawWallPreview(ctx) {
+  if (!hoverWall || state.is_finished) return;
+  // Don't show preview if current player has no walls left
+  const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+  if (!hasWalls) return;
+
+  const key = `${hoverWall.orientation}:${hoverWall.ax}:${hoverWall.ay}`;
+  const legal = legalWallSet.has(key);
+
+  ctx.fillStyle   = legal ? CLR.wallHoverOk  : CLR.wallHoverBad;
+  ctx.shadowColor = legal ? CLR.wallHoverOkGlow : CLR.wallHoverBadGlow;
+  ctx.shadowBlur  = 10;
+  drawOneWall(ctx, hoverWall.ax, hoverWall.ay, hoverWall.orientation);
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur  = 0;
+}
+
+function drawPawns(ctx) {
+  drawOnePawn(ctx, state.player1pos[0], state.player1pos[1], CLR.pawn1, String(state.walls_p1));
+  drawOnePawn(ctx, state.player2pos[0], state.player2pos[1], CLR.pawn2, String(state.walls_p2));
+}
+
+function drawOnePawn(ctx, gx, gy, color, label) {
+  const { x, y } = cellOrigin(gx, gy);
+  const cx = x + CELL / 2;
+  const cy = y + CELL / 2;
+  const r  = CELL * 0.30;
+
+  // Drop shadow
+  ctx.shadowColor   = 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur    = 14;
+  ctx.shadowOffsetY = 4;
+
+  // Radial gradient for a 3D look
+  const grad = ctx.createRadialGradient(cx - r * 0.28, cy - r * 0.3, r * 0.05, cx, cy, r);
+  grad.addColorStop(0, lighten(color, 60));
+  grad.addColorStop(0.6, color);
+  grad.addColorStop(1, darken(color, 40));
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.shadowColor   = 'transparent';
+  ctx.shadowBlur    = 0;
+  ctx.shadowOffsetY = 0;
+
+  // Thin dark rim instead of white outline
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth   = 1.5;
+  ctx.stroke();
+
+  // Small specular highlight
+  const shine = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.35, 0, cx - r * 0.2, cy - r * 0.25, r * 0.55);
+  shine.addColorStop(0, 'rgba(255,255,255,0.28)');
+  shine.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.fillStyle = shine;
+  ctx.fill();
+
+  // Label with text shadow for depth
+  ctx.shadowColor   = 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur    = 4;
+  ctx.shadowOffsetY = 1;
+  ctx.fillStyle    = '#fff';
+  ctx.font         = `700 ${Math.round(CELL * 0.26)}px 'Segoe UI', system-ui, sans-serif`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, cx, cy);
+  ctx.shadowColor   = 'transparent';
+  ctx.shadowBlur    = 0;
+  ctx.shadowOffsetY = 0;
+}
+
+function lighten(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.min(255, (n >> 16)         + amt);
+  const g = Math.min(255, ((n >> 8) & 0xff) + amt);
+  const b = Math.min(255, (n & 0xff)        + amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+function darken(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.max(0, (n >> 16)         - amt);
+  const g = Math.max(0, ((n >> 8) & 0xff) - amt);
+  const b = Math.max(0, (n & 0xff)        - amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+function updateSidebar() {
+  document.getElementById('walls-p1').textContent = `${state.walls_p1} wall${state.walls_p1 !== 1 ? 's' : ''}`;
+  document.getElementById('walls-p2').textContent = `${state.walls_p2} wall${state.walls_p2 !== 1 ? 's' : ''}`;
+
+  const pe1 = document.getElementById('pe-p1');
+  const pe2 = document.getElementById('pe-p2');
+  pe1.className = 'player-entry' + (state.current_player === 1 && !state.is_finished ? ' active-p1' : '');
+  pe2.className = 'player-entry' + (state.current_player === 2 && !state.is_finished ? ' active-p2' : '');
+
+  document.getElementById('status-ply').textContent = `Ply ${state.depth}`;
+  const txt = document.getElementById('status-text');
+  const sub = document.getElementById('status-sub');
+  if (state.is_finished) {
+    txt.textContent = state.winner ? `Player ${state.winner} wins! 🎉` : 'Draw';
+    sub.textContent = state.winner ? 'Game over' : 'Max depth reached';
+  } else {
+    txt.textContent = `Player ${state.current_player}'s turn`;
+    sub.textContent = state.current_player === 1 ? 'Green — reach the top row'
+                                                  : 'Red — reach the bottom row';
+  }
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+function setupInput(canvas) {
+  canvas.addEventListener('click', e => {
+    if (!state || state.is_finished) return;
+    const { px, py } = canvasPos(e, canvas);
+
+    // Try pawn move first (clicks on highlighted cells)
+    const cell = pixelToCell(px, py);
+    if (cell) {
+      const match = landing.find(l => l.gx === cell.gx && l.gy === cell.gy);
+      if (match) { postMove({ type: 'pawn', direction: match.dir }); return; }
+    }
+
+    // Try wall placement (clicks in gap regions)
+    const wall = pixelToWall(px, py);
+    if (wall) {
+      const key = `${wall.orientation}:${wall.ax}:${wall.ay}`;
+      const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+      if (hasWalls && legalWallSet.has(key))
+        postMove({ type: 'wall', x: wall.ax, y: wall.ay, orientation: wall.orientation });
+    }
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    if (!state || state.is_finished) return;
+    const { px, py } = canvasPos(e, canvas);
+
+    const cell = pixelToCell(px, py);
+    const onLegalCell = cell && landing.some(l => l.gx === cell.gx && l.gy === cell.gy);
+
+    const wall = pixelToWall(px, py);
+    const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+    const newHover = (wall && hasWalls) ? wall : null;
+
+    // Redraw only when hover changes
+    const changed = JSON.stringify(newHover) !== JSON.stringify(hoverWall);
+    hoverWall = newHover;
+    if (changed) {
+      const canvas = document.getElementById('board');
+      draw(canvas.getContext('2d'));
+    }
+
+    canvas.style.cursor = (onLegalCell || (wall && hasWalls)) ? 'pointer' : 'default';
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    if (hoverWall) {
+      hoverWall = null;
+      const canvas = document.getElementById('board');
+      draw(canvas.getContext('2d'));
+    }
+  });
+}
+
+function canvasPos(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  return { px: e.clientX - rect.left - LABEL, py: e.clientY - rect.top };
+}
+
+// ── API ───────────────────────────────────────────────────────────────────────
+async function fetchState() {
+  const resp = await fetch('/api/state');
+  applyState(await resp.json());
+}
+
+async function postMove(body) {
+  // Apply move visually right away — no waiting for server
+  applyOptimistic(body);
+
+  const resp = await fetch('/api/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) { fetchState(); return; }  // rollback on error
+  applyState(await resp.json());           // sync legal moves for next turn
+}
+
+function applyOptimistic(body) {
+  if (body.type === 'pawn') {
+    const [dx, dy] = body.direction;
+    const match = landing.find(l => l.dir[0] === dx && l.dir[1] === dy);
+    if (match) {
+      if (state.current_player === 1) state.player1pos = [match.gx, match.gy];
+      else state.player2pos = [match.gx, match.gy];
+    }
+  } else {
+    if (body.orientation === 'h') state.hwall_anchors.push([body.x, body.y]);
+    else state.vwall_anchors.push([body.x, body.y]);
+    if (state.current_player === 1) state.walls_p1--;
+    else state.walls_p2--;
+  }
+  state.current_player = state.current_player === 1 ? 2 : 1;
+  landing      = [];
+  legalWallSet = new Set();
+  hoverWall    = null;
+  const canvas = document.getElementById('board');
+  draw(canvas.getContext('2d'));
+  updateSidebar();
+}
+
+async function resetGame() {
+  const resp = await fetch('/api/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  applyState(await resp.json());
+}
+
+function applyState(s) {
+  state        = s;
+  landing      = computeLanding();
+  legalWallSet = computeLegalWallSet();
+  hoverWall    = null;
+  const canvas = document.getElementById('board');
+  canvas.width  = canvasSize() + LABEL;
+  canvas.height = canvasSize() + LABEL;
+  draw(canvas.getContext('2d'));
+  updateSidebar();
+  if (document.getElementById('nn-panel').classList.contains('open')) openNNPanel();
+}
+
+// ── NN channel viewer ──────────────────────────────────────────────────────
+function renderChannel(canvas, matrix, showNumbers) {
+  const N = matrix.length;
+  const S = showNumbers ? Math.max(28, Math.floor(200 / N)) : Math.max(4, Math.floor(200 / N));
+  const dpr = showNumbers ? (window.devicePixelRatio || 1) : 1;
+  const logW = N * S;
+  canvas.width  = logW * dpr;
+  canvas.height = logW * dpr;
+  canvas.style.width  = logW + 'px';
+  canvas.style.height = logW + 'px';
+  canvas.style.imageRendering = showNumbers ? 'auto' : 'pixelated';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const v = matrix[N - 1 - y][x];  // flip y so row 0 is at bottom
+      const c = Math.round(v * 255);
+      ctx.fillStyle = `rgb(${c},${c},${c})`;
+      ctx.fillRect(x * S, y * S, S, S);
+      if (showNumbers) {
+        const raw = Math.round(v * showNumbers * 1e4) / 1e4;  // showNumbers holds the scale
+        const txt = String(Math.round(raw));
+        ctx.fillStyle = v > 0.5 ? '#000' : '#fff';
+        ctx.font = `bold ${Math.round(S * 0.35)}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(txt, x * S + S / 2, y * S + S / 2);
+      }
+    }
+  }
+}
+
+async function openNNPanel() {
+  const resp = await fetch('/api/nn_input');
+  if (!resp.ok) return;
+  const data = await resp.json();
+  document.getElementById('nn-note').textContent =
+    `Player ${data.current_player}\'s turn (board shown from their perspective — moving up)`;
+  const grid = document.getElementById('nn-grid');
+  grid.innerHTML = '';
+  data.channels.forEach((matrix, i) => {
+    const div = document.createElement('div');
+    div.className = 'nn-channel';
+    const label = document.createElement('div');
+    label.className = 'nn-channel-name';
+    label.textContent = `ch${i}: ${data.names[i]}`;
+    const cvs = document.createElement('canvas');
+    div.appendChild(label);
+    div.appendChild(cvs);
+    grid.appendChild(div);
+    renderChannel(cvs, matrix, i >= 4 ? data.scales[i] : 0);
+  });
+  document.getElementById('nn-panel').classList.add('open');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('board');
+setupInput(canvas);
+document.getElementById('btn-reset').addEventListener('click', resetGame);
+document.getElementById('btn-nn').addEventListener('click', () => {
+  const panel = document.getElementById('nn-panel');
+  if (panel.classList.contains('open')) {
+    panel.classList.remove('open');
+  } else {
+    openNNPanel();
+  }
+});
+fetchState();
+</script>
+</body>
+</html>
