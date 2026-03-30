@@ -207,6 +207,8 @@ class State:
                     continue
                 if dist_grid[ny][nx] != d - 1:
                     continue
+                if self._is_edge_blocked(x, y, dx, dy):
+                    continue  # edge is wall-blocked; dist[ny][nx] was reached via another route
                 if   dy ==  1: edge_set.add(('h', y,     x    ))
                 elif dy == -1: edge_set.add(('h', y - 1, x    ))
                 elif dx ==  1: edge_set.add(('v', y,     x    ))
@@ -844,6 +846,122 @@ class State:
         planes[7] = np.where(d < INF, d / max_dist, 1.0)
 
         return planes
+
+
+# ---------------------------------------------------------------------------
+# Action ↔ policy-index mapping (for neural-network policy head)
+# ---------------------------------------------------------------------------
+#
+# Index layout for a board of size N:
+#
+#   0 – 3          PawnAction  orthogonal:  up, down, left, right
+#   4 – 7          PawnAction  diagonal:    up-left, up-right, down-left, down-right
+#   8 … 8+(N-1)²-1            WallAction horizontal, row-major: idx = 8 + y*(N-1) + x
+#   8+(N-1)² … 8+2*(N-1)²-1  WallAction vertical,   row-major: idx = 8 + (N-1)² + y*(N-1) + x
+#
+#   Total actions:  8 + 2*(N-1)²
+#   7×7 board  →  8 + 2×36  =  80
+#   9×9 board  →  8 + 2×64  = 136
+#
+# The mapping is purely positional: indices 0–7 mirror ALL_PAWN_DIRECTIONS order
+# and wall indices increase left-to-right, then bottom-to-top — matching the
+# board coordinate system (origin bottom-left).
+
+def action_space_size(boardsize: int) -> int:
+    """Total number of distinct actions on a board of the given size."""
+    return 8 + 2 * (boardsize - 1) ** 2
+
+
+def action_to_index(action: Action, boardsize: int) -> int:
+    """
+    Convert an ``Action`` to its policy-head index.
+
+    Raises ``ValueError`` for unknown action types or out-of-range coordinates.
+    """
+    if isinstance(action, PawnAction):
+        return ALL_PAWN_DIRECTIONS.index(action.direction)
+    if isinstance(action, WallAction):
+        W = boardsize - 1
+        offset = 0 if action.orientation == 'h' else W * W
+        return 8 + offset + action.y * W + action.x
+    raise ValueError(f"Unknown action type: {type(action)}")
+
+
+def index_to_action(index: int, boardsize: int) -> Action:
+    """
+    Convert a policy-head index back to an ``Action``.
+
+    Raises ``ValueError`` for indices outside ``[0, action_space_size(boardsize))``.
+    """
+    total = action_space_size(boardsize)
+    if not (0 <= index < total):
+        raise ValueError(f"Index {index} out of range [0, {total}) for boardsize {boardsize}")
+    if index < 8:
+        return PawnAction(direction=ALL_PAWN_DIRECTIONS[index])
+    W = boardsize - 1
+    wall_idx = index - 8
+    if wall_idx < W * W:
+        return WallAction(x=wall_idx % W, y=wall_idx // W, orientation='h')
+    wall_idx -= W * W
+    return WallAction(x=wall_idx % W, y=wall_idx // W, orientation='v')
+
+
+# ---------------------------------------------------------------------------
+# Left-right symmetry helpers
+# ---------------------------------------------------------------------------
+#
+# Quoridor has left-right (mirror) symmetry: if you flip the board
+# horizontally, the resulting position is equally valid and strategically
+# equivalent.  These helpers let callers exploit that symmetry for free data
+# augmentation and MCTS evaluator symmetrisation.
+
+# Pawn direction indices after a left-right flip.
+# Under flip: dx → -dx, dy stays the same.
+# ALL_PAWN_DIRECTIONS: 0=(0,1) 1=(0,-1) 2=(-1,0) 3=(1,0)
+#                      4=(-1,1) 5=(1,1) 6=(-1,-1) 7=(1,-1)
+_LR_PAWN_FLIP = (0, 1, 3, 2, 5, 4, 7, 6)
+
+
+def flip_nn_input_lr(planes: np.ndarray) -> np.ndarray:
+    """
+    Flip a (8, N, N) nn_input array left-right (mirror along the vertical axis).
+
+    Column x maps to column N-1-x.  This is a pure numpy operation — no game
+    state reconstruction needed.
+
+    The wall channels (2=hwalls, 3=vwalls) encode wall *segments* on the NxN
+    grid; under a column flip those segments flip with the board, so
+    ``np.flip(..., axis=2)`` is both necessary and sufficient for all 8 channels.
+    """
+    return np.flip(planes, axis=2).copy()
+
+
+def flip_policy_lr(policy: np.ndarray, boardsize: int) -> np.ndarray:
+    """
+    Remap a full-size policy vector (length = action_space_size(boardsize))
+    to the mirrored board.
+
+    Pawn moves: swap left↔right and the two pairs of diagonals (see _LR_PAWN_FLIP).
+    Wall moves: anchor x → W-1-x for both H and V walls (y unchanged).
+    """
+    W = boardsize - 1
+    flipped = np.empty_like(policy)
+
+    # Pawn actions (indices 0-7)
+    for orig, mapped in enumerate(_LR_PAWN_FLIP):
+        flipped[mapped] = policy[orig]
+
+    # H-wall actions (indices 8 .. 8+W²-1), anchor grid is W×W, row-major
+    h_start = 8
+    h_block = policy[h_start: h_start + W * W].reshape(W, W)      # (W, W) [y, x]
+    flipped[h_start: h_start + W * W] = np.flip(h_block, axis=1).ravel()
+
+    # V-wall actions (indices 8+W² .. end), same layout
+    v_start = 8 + W * W
+    v_block = policy[v_start: v_start + W * W].reshape(W, W)
+    flipped[v_start: v_start + W * W] = np.flip(v_block, axis=1).ravel()
+
+    return flipped
 
 
 if __name__ == "__main__":
