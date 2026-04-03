@@ -118,6 +118,51 @@
     }
     button:hover { background: var(--surface); border-color: var(--muted); }
 
+    /* ── agent select ── */
+    .agent-select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      margin-bottom: 8px;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    .agent-select:focus { outline: none; border-color: var(--muted); }
+    .agent-select option:disabled { color: var(--muted); }
+
+    /* ── checkpoint select ── */
+    #checkpoint-row {
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+    #checkpoint-row.visible { display: flex; }
+    #checkpoint-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--muted);
+    }
+
+    /* ── mode selector ── */
+    .mode-btn-group { display: flex; gap: 6px; }
+    .mode-btn { flex: 1; padding: 7px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
+    .mode-btn.active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
+
+    /* ── thinking animation ── */
+    @keyframes thinking-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+    #status-text.thinking { animation: thinking-pulse 1.2s ease-in-out infinite; }
+
     /* ── board column (board + nn panel stacked) ── */
     #board-col {
       display: flex;
@@ -168,12 +213,12 @@
     <div class="card-label">Players</div>
     <div class="player-entry" id="pe-p1">
       <div class="pawn-dot blue"></div>
-      <span class="player-name">Player 1</span>
+      <span class="player-name" id="name-p1">Player 1</span>
       <span class="wall-count" id="walls-p1"></span>
     </div>
     <div class="player-entry" id="pe-p2">
       <div class="pawn-dot red"></div>
-      <span class="player-name">Player 2</span>
+      <span class="player-name" id="name-p2">Player 2</span>
       <span class="wall-count" id="walls-p2"></span>
     </div>
   </div>
@@ -185,7 +230,33 @@
     <div id="status-ply" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
   </div>
 
+  <div class="card">
+    <div class="card-label">Mode</div>
+    <div class="mode-btn-group">
+      <button class="mode-btn" data-mode="hvh">H vs H</button>
+      <button class="mode-btn active" data-mode="hva">H vs AI</button>
+      <button class="mode-btn" data-mode="avh">AI vs H</button>
+    </div>
+  </div>
+
+  <div class="card" id="agent-card">
+    <div class="card-label">Agent</div>
+    <select id="agent-select" class="agent-select"></select>
+    <div id="agent-desc" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+    <div id="checkpoint-row">
+      <div id="checkpoint-label">Checkpoint</div>
+      <select id="checkpoint-select" class="agent-select" style="margin-bottom:0"></select>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
+      <span id="sims-display" style="font-size:12px;font-weight:600">800</span>
+    </div>
+    <input id="sims-slider" type="range" min="400" max="10000" step="400" value="800"
+           style="width:100%;accent-color:#3fb950;cursor:pointer">
+  </div>
+
   <button id="btn-reset">&#x21BA; New Game</button>
+  <button id="btn-undo">&#x21A9; Undo Move</button>
   <button id="btn-nn">&#x1F9E0; NN Channels</button>
 </div>
 
@@ -232,10 +303,18 @@ const CLR = {
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let state        = null;
-let landing      = [];   // [{gx, gy, dir:[dx,dy]}] — legal pawn destinations
-let hoverWall    = null;  // {ax, ay, orientation} — wall slot under cursor
-let legalWallSet = new Set(); // "h:ax:ay" strings for O(1) legality lookup
+let state          = null;
+let landing        = [];   // [{gx, gy, dir:[dx,dy]}] — legal pawn destinations
+let hoverWall      = null;  // {ax, ay, orientation} — wall slot under cursor
+let legalWallSet   = new Set(); // "h:ax:ay" strings for O(1) legality lookup
+let gameMode       = 'hva';     // 'hvh' | 'hva' | 'avh'
+let numSimulations = 800;
+let selectedAgentId   = 'alphazero';
+let selectedModelPath = null;   // null = use default (best.pt), else a checkpoint path
+let _agentList        = [];     // last fetched from /api/agents
+let _checkpointList   = [];     // last fetched from /api/checkpoints
+let agentThinking  = false;
+let _searchGen     = 0;
 
 // ── Coordinate helpers ────────────────────────────────────────────────────────
 // Game: (0,0) = bottom-left, y increases upward.
@@ -447,7 +526,7 @@ function drawWalls(ctx) {
 }
 
 function drawWallPreview(ctx) {
-  if (!hoverWall || state.is_finished) return;
+  if (!hoverWall || state.is_finished || isAgentTurn()) return;
   // Don't show preview if current player has no walls left
   const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
   if (!hasWalls) return;
@@ -542,6 +621,8 @@ function darken(hex, amt) {
 function updateSidebar() {
   document.getElementById('walls-p1').textContent = `${state.walls_p1} wall${state.walls_p1 !== 1 ? 's' : ''}`;
   document.getElementById('walls-p2').textContent = `${state.walls_p2} wall${state.walls_p2 !== 1 ? 's' : ''}`;
+  document.getElementById('name-p1').textContent = gameMode === 'avh' ? currentAgentName() : 'Player 1';
+  document.getElementById('name-p2').textContent = gameMode === 'hva' ? currentAgentName() : 'Player 2';
 
   const pe1 = document.getElementById('pe-p1');
   const pe2 = document.getElementById('pe-p2');
@@ -551,11 +632,20 @@ function updateSidebar() {
   document.getElementById('status-ply').textContent = `Ply ${state.depth}`;
   const txt = document.getElementById('status-text');
   const sub = document.getElementById('status-sub');
-  if (state.is_finished) {
+  if (agentThinking) {
+    txt.className = 'thinking';
+    txt.textContent = 'Thinking…';
+    sub.textContent = `${currentAgentName()} · ${numSimulations} simulations`;
+  } else if (state.is_finished) {
+    txt.className = '';
     txt.textContent = state.winner ? `Player ${state.winner} wins! 🎉` : 'Draw';
     sub.textContent = state.winner ? 'Game over' : 'Max depth reached';
   } else {
-    txt.textContent = `Player ${state.current_player}'s turn`;
+    txt.className = '';
+    const name = (gameMode === 'avh' && state.current_player === 1) ? currentAgentName()
+               : (gameMode === 'hva' && state.current_player === 2) ? currentAgentName()
+               : `Player ${state.current_player}`;
+    txt.textContent = `${name}'s turn`;
     sub.textContent = state.current_player === 1 ? 'Green — reach the top row'
                                                   : 'Red — reach the bottom row';
   }
@@ -564,7 +654,7 @@ function updateSidebar() {
 // ── Input ─────────────────────────────────────────────────────────────────────
 function setupInput(canvas) {
   canvas.addEventListener('click', e => {
-    if (!state || state.is_finished) return;
+    if (!state || state.is_finished || agentThinking || isAgentTurn()) return;
     const { px, py } = canvasPos(e, canvas);
 
     // Try pawn move first (clicks on highlighted cells)
@@ -587,6 +677,12 @@ function setupInput(canvas) {
   canvas.addEventListener('mousemove', e => {
     if (!state || state.is_finished) return;
     const { px, py } = canvasPos(e, canvas);
+
+    if (agentThinking || isAgentTurn()) {
+      if (hoverWall) { hoverWall = null; draw(canvas.getContext('2d')); }
+      canvas.style.cursor = 'default';
+      return;
+    }
 
     const cell = pixelToCell(px, py);
     const onLegalCell = cell && landing.some(l => l.gx === cell.gx && l.gy === cell.gy);
@@ -659,14 +755,20 @@ function applyOptimistic(body) {
   hoverWall    = null;
   const canvas = document.getElementById('board');
   draw(canvas.getContext('2d'));
+  if (!agentThinking && isAgentTurn() && !state.is_finished)
+    agentThinking = true;
   updateSidebar();
 }
 
 async function resetGame() {
+  _searchGen++;
+  agentThinking = false;
+  const body = { num_simulations: numSimulations, agent_id: selectedAgentId };
+  if (selectedModelPath) body.model_path = selectedModelPath;
   const resp = await fetch('/api/reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify(body),
   });
   applyState(await resp.json());
 }
@@ -680,8 +782,12 @@ function applyState(s) {
   canvas.width  = canvasSize() + LABEL;
   canvas.height = canvasSize() + LABEL;
   draw(canvas.getContext('2d'));
+  if (!agentThinking && isAgentTurn() && !state.is_finished)
+    agentThinking = true;  // show Thinking… immediately, before the setTimeout fires
   updateSidebar();
   if (document.getElementById('nn-panel').classList.contains('open')) openNNPanel();
+  if (isAgentTurn() && !state.is_finished)
+    setTimeout(triggerAgentMove, 80);
 }
 
 // ── NN channel viewer ──────────────────────────────────────────────────────
@@ -739,10 +845,127 @@ async function openNNPanel() {
   document.getElementById('nn-panel').classList.add('open');
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Agent selector ─────────────────────────────────────────────────────────────────────────────
+async function fetchAgents() {
+  const resp = await fetch('/api/agents');
+  if (!resp.ok) return;
+  _agentList = await resp.json();
+  const sel = document.getElementById('agent-select');
+  sel.innerHTML = '';
+  for (const a of _agentList) {
+    const opt = document.createElement('option');
+    opt.value    = a.id;
+    opt.textContent = a.name + (a.available ? '' : ' (unavailable)');
+    opt.disabled = !a.available;
+    if (a.id === selectedAgentId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  // pick first available if current selection became unavailable
+  const current = _agentList.find(a => a.id === selectedAgentId && a.available);
+  if (!current) {
+    const first = _agentList.find(a => a.available);
+    if (first) { selectedAgentId = first.id; sel.value = first.id; }
+  }
+  _updateAgentDesc();
+  _updateCheckpointVisibility();
+}
+
+function _updateAgentDesc() {
+  const a = _agentList.find(a => a.id === selectedAgentId);
+  document.getElementById('agent-desc').textContent = a ? a.description : '';
+}
+
+async function _updateCheckpointVisibility() {
+  const row = document.getElementById('checkpoint-row');
+  if (selectedAgentId !== 'alphazero') {
+    row.classList.remove('visible');
+    selectedModelPath = null;
+    return;
+  }
+  row.classList.add('visible');
+  // Fetch checkpoints only once (or when the list is empty)
+  if (_checkpointList.length === 0) {
+    const resp = await fetch('/api/checkpoints');
+    if (resp.ok) _checkpointList = await resp.json();
+  }
+  _populateCheckpointSelect();
+}
+
+function _populateCheckpointSelect() {
+  const sel = document.getElementById('checkpoint-select');
+  sel.innerHTML = '';
+  // First option: use best.pt (default)
+  const best = document.createElement('option');
+  best.value = '__best__';
+  best.textContent = 'Best (latest trained)';
+  if (!selectedModelPath) best.selected = true;
+  sel.appendChild(best);
+  // Then each checkpoint in reverse order (newest first)
+  for (const ck of [..._checkpointList].reverse()) {
+    const opt = document.createElement('option');
+    opt.value = ck.path;
+    opt.textContent = ck.label;  // e.g. cycle_0107
+    if (selectedModelPath === ck.path) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function currentAgentName() {
+  const a = _agentList.find(a => a.id === selectedAgentId);
+  if (!a) return 'AI';
+  if (selectedAgentId === 'alphazero' && selectedModelPath) {
+    const ck = _checkpointList.find(c => c.path === selectedModelPath);
+    return ck ? `${a.name} (${ck.label})` : a.name;
+  }
+  return a.name;
+}
+
+// ── Agent ──────────────────────────────────────────────────────────────────────────────
+function isAgentTurn() {
+  if (!state || state.is_finished) return false;
+  return (gameMode === 'hva' && state.current_player === 2)
+      || (gameMode === 'avh' && state.current_player === 1);
+}
+
+async function triggerAgentMove() {
+  if (!state || state.is_finished) return;
+  agentThinking = true;
+  const gen = ++_searchGen;
+  updateSidebar();
+  const resp = await fetch('/api/agent_move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ num_simulations: numSimulations }),
+  });
+  agentThinking = false;
+  if (gen !== _searchGen) return;  // reset happened while waiting — discard
+  if (!resp.ok) { fetchState(); return; }
+  applyState(await resp.json());
+}
+
+// ── Undo ─────────────────────────────────────────────────────────────────────
+async function undoMove() {
+  if (agentThinking) {
+    _searchGen++;        // discard in-flight agent response
+    agentThinking = false;
+  }
+  // In AI modes, undo both the AI's move and the human's move before it,
+  // so the human lands back on their own previous turn.
+  const count = gameMode === 'hvh' ? 1 : 2;
+  const resp = await fetch('/api/undo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count }),
+  });
+  if (!resp.ok) return;   // nothing to undo
+  applyState(await resp.json());
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────────────
 const canvas = document.getElementById('board');
 setupInput(canvas);
 document.getElementById('btn-reset').addEventListener('click', resetGame);
+document.getElementById('btn-undo').addEventListener('click', undoMove);
 document.getElementById('btn-nn').addEventListener('click', () => {
   const panel = document.getElementById('nn-panel');
   if (panel.classList.contains('open')) {
@@ -751,7 +974,69 @@ document.getElementById('btn-nn').addEventListener('click', () => {
     openNNPanel();
   }
 });
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.mode === gameMode) return;
+    gameMode = btn.dataset.mode;
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('agent-card').style.display = gameMode === 'hvh' ? 'none' : '';
+    // Don't restart the game — just re-render and trigger AI if it's now AI's turn.
+    hoverWall = null;
+    const cvs = document.getElementById('board');
+    draw(cvs.getContext('2d'));
+    updateSidebar();
+    if (state && !state.is_finished && !agentThinking && isAgentTurn())
+      setTimeout(triggerAgentMove, 80);
+  });
+});
+document.getElementById('sims-slider').addEventListener('input', e => {
+  numSimulations = Number(e.target.value);
+  document.getElementById('sims-display').textContent = numSimulations;
+});
+document.getElementById('agent-select').addEventListener('change', e => {
+  selectedAgentId = e.target.value;
+  _updateAgentDesc();
+  _updateCheckpointVisibility();
+  if (gameMode === 'hvh') return;
+  _searchGen++;
+  agentThinking = false;
+  // Reset selectedModelPath when agent changes
+  selectedModelPath = null;
+  updateSidebar();
+  const body = { agent_id: selectedAgentId, num_simulations: numSimulations };
+  fetch('/api/set_agent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => {
+    if (r.ok && state && !state.is_finished && isAgentTurn())
+      setTimeout(triggerAgentMove, 80);
+  });
+});
+
+document.getElementById('checkpoint-select').addEventListener('change', e => {
+  const val = e.target.value;
+  selectedModelPath = val === '__best__' ? null : val;
+  if (gameMode === 'hvh') return;
+  _searchGen++;
+  agentThinking = false;
+  updateSidebar();
+  const body = { agent_id: selectedAgentId, num_simulations: numSimulations };
+  if (selectedModelPath) body.model_path = selectedModelPath;
+  fetch('/api/set_agent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => {
+    if (r.ok && state && !state.is_finished && isAgentTurn())
+      setTimeout(triggerAgentMove, 80);
+  });
+});
+fetchAgents();
 fetchState();
+// Show checkpoint selector immediately if alphazero is the default
+_updateCheckpointVisibility();
 </script>
 </body>
 </html>

@@ -4,25 +4,73 @@ Flask server for SigmaQuoridor.
 API
 ---
 GET  /api/state          -> full game state + legal actions (JSON)
+GET  /api/agents         -> list of registered AI agents and their availability
 POST /api/move           -> apply a move, return new state + legal actions
+POST /api/agent_move     -> let the active agent make one move
 POST /api/reset          -> reset the game to initial state
 
 Move body (JSON):
   Pawn move:  {"type": "pawn", "direction": [dx, dy]}
   Wall place: {"type": "wall", "x": int, "y": int, "orientation": "h"|"v"}
 
+Reset body (JSON, all optional):
+  {"boardsize": 7, "walls": 5, "num_simulations": 800, "agent_id": "alphazero"}
+
 The /api/state response is the single source of truth for the frontend
 and for AI agents. An agent only needs to POST to /api/move.
 """
 
 import time
+from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 from game import State, PawnAction, WallAction
+from mcts import MCTSAgent
+from dual_network import make_nn_evaluator
 
 app = Flask(__name__, static_folder="static", template_folder="static")
 
-# Global mutable game state (single-session, single-game)
+# ── Agent registry ────────────────────────────────────────────────────────────
+# To add a new agent, append an entry here.  Keys:
+#   name        – display name shown in the frontend dropdown
+#   description – one-line subtitle shown below the selector
+#   available   – callable() -> bool; checked at request time so model
+#                 files can be hot-loaded without restarting the server
+#   factory     – callable(num_simulations: int) -> MCTSAgent
+#
+# The first available agent is used as the default on /api/reset.
+
+def _always() -> bool:
+    return True
+
+_AGENT_REGISTRY: dict[str, dict] = {
+    "alphazero": {
+        "name": "SigmaQuoridor",
+        "description": "MCTS guided by a trained neural network",
+        "available": lambda: Path("models/best.pt").exists(),
+        "factory": lambda n: MCTSAgent(
+            evaluator=make_nn_evaluator("models/best.pt"),
+            num_simulations=n,
+        ),
+    },
+    "mcts_rollout": {
+        "name": "MCTS · Rollout",
+        "description": "Pure MCTS with random rollouts",
+        "available": _always,
+        "factory": lambda n: MCTSAgent(num_simulations=n),
+    },
+}
+
+
+def _default_agent_id() -> str:
+    for agent_id, info in _AGENT_REGISTRY.items():
+        if info["available"]():
+            return agent_id
+    raise RuntimeError("No agents available")
+
+# Global mutable game state and active agent (single-session)
 _state: State = State()
+_agent: MCTSAgent = _AGENT_REGISTRY[_default_agent_id()]["factory"](800)
+_history: list[State] = []   # stack of states before each move, for undo
 
 
 def _serialize_state(state: State) -> dict:
@@ -61,6 +109,31 @@ def _serialize_state(state: State) -> dict:
         "legal_pawn_moves": pawn_moves,  # list of [dx, dy]
         "legal_wall_moves": wall_moves,  # list of {x, y, orientation}
     }
+
+
+@app.get("/api/checkpoints")
+def get_checkpoints():
+    checkpoint_dir = Path("models/checkpoints")
+    if not checkpoint_dir.is_dir():
+        return jsonify([])
+    files = sorted(checkpoint_dir.glob("*.pt"))
+    return jsonify([
+        {"id": f.name, "path": f"models/checkpoints/{f.name}", "label": f.stem}
+        for f in files
+    ])
+
+
+@app.get("/api/agents")
+def get_agents():
+    return jsonify([
+        {
+            "id":          agent_id,
+            "name":        info["name"],
+            "description": info["description"],
+            "available":   info["available"](),
+        }
+        for agent_id, info in _AGENT_REGISTRY.items()
+    ])
 
 
 @app.get("/api/state")
@@ -107,6 +180,7 @@ def post_move():
     if not _state.is_action_legal(action):
         return jsonify({"error": "Illegal action"}), 422
 
+    _history.append(_state)
     _state = _state.next(action, check_legal=False)
     t1 = time.perf_counter()
     result = _serialize_state(_state)
@@ -115,13 +189,97 @@ def post_move():
     return jsonify(result)
 
 
+@app.post("/api/agent_move")
+def post_agent_move():
+    global _state
+    if _state.is_finished():
+        return jsonify({"error": "Game is already finished"}), 400
+    data = request.get_json(force=True, silent=True) or {}
+    if "num_simulations" in data:
+        _agent.num_simulations = int(data["num_simulations"])
+    t0 = time.perf_counter()
+    action = _agent.select_action(_state)
+    t1 = time.perf_counter()
+    _history.append(_state)
+    _state = _state.next(action, check_legal=False)
+    t2 = time.perf_counter()
+    result = _serialize_state(_state)
+    print(f"[agent] think={1000*(t1-t0):.0f}ms  next={1000*(t2-t1):.1f}ms", flush=True)
+    return jsonify(result)
+
+
+@app.post("/api/undo")
+def post_undo():
+    global _state
+    data = request.get_json(force=True, silent=True) or {}
+    count = max(1, int(data.get("count", 1)))
+    if len(_history) < count:
+        if not _history:
+            return jsonify({"error": "Nothing to undo"}), 400
+        count = len(_history)  # undo as many as we have
+    for _ in range(count):
+        _state = _history.pop()
+    return jsonify(_serialize_state(_state))
+
+
+@app.post("/api/set_agent")
+def post_set_agent():
+    global _agent
+    data = request.get_json(force=True, silent=True) or {}
+    agent_id = data.get("agent_id", _default_agent_id())
+    num_sims = data.get("num_simulations", 800)
+    model_path = data.get("model_path")  # optional checkpoint override
+
+    if agent_id not in _AGENT_REGISTRY:
+        return jsonify({"error": f"Unknown agent: {agent_id}"}), 400
+    info = _AGENT_REGISTRY[agent_id]
+
+    if model_path and agent_id == "alphazero":
+        # Validate path to prevent directory traversal
+        resolved = Path(model_path).resolve()
+        allowed = Path("models").resolve()
+        if not str(resolved).startswith(str(allowed)) or resolved.suffix != ".pt":
+            return jsonify({"error": "Invalid model path"}), 400
+        if not resolved.exists():
+            return jsonify({"error": "Model file not found"}), 404
+        _agent = MCTSAgent(evaluator=make_nn_evaluator(str(resolved)), num_simulations=num_sims)
+    else:
+        if not info["available"]():
+            return jsonify({"error": f"Agent '{agent_id}' is not available"}), 400
+        _agent = info["factory"](num_sims)
+    return jsonify({"ok": True})
+
+
 @app.post("/api/reset")
 def post_reset():
-    global _state
-    boardsize = request.get_json(force=True, silent=True) or {}
-    size = boardsize.get("boardsize", 7)
-    walls = boardsize.get("walls", 5)
+    global _state, _agent
+    data = request.get_json(force=True, silent=True) or {}
+    size       = data.get("boardsize", 7)
+    walls      = data.get("walls", 5)
+    num_sims   = data.get("num_simulations", 800)
+    agent_id   = data.get("agent_id", _default_agent_id())
+    model_path = data.get("model_path")  # optional checkpoint override
+
+    if agent_id not in _AGENT_REGISTRY:
+        return jsonify({"error": f"Unknown agent: {agent_id}"}), 400
+    info = _AGENT_REGISTRY[agent_id]
+
+    if model_path and agent_id == "alphazero":
+        resolved = Path(model_path).resolve()
+        allowed  = Path("models").resolve()
+        if not str(resolved).startswith(str(allowed)) or resolved.suffix != ".pt":
+            return jsonify({"error": "Invalid model path"}), 400
+        if not resolved.exists():
+            return jsonify({"error": "Model file not found"}), 404
+        agent_instance = MCTSAgent(evaluator=make_nn_evaluator(str(resolved)), num_simulations=num_sims)
+    else:
+        if not info["available"]():
+            return jsonify({"error": f"Agent '{agent_id}' is not available"}), 400
+        agent_instance = info["factory"](num_sims)
+
+    _history.clear()
     _state = State(boardsize=size, walls_p1=walls, walls_p2=walls)
+    _agent = agent_instance
     return jsonify(_serialize_state(_state))
 
 
@@ -131,6 +289,10 @@ def index():
 
 
 if __name__ == "__main__":
+    import argparse
     from waitress import serve
-    print(" * Running on http://127.0.0.1:5000", flush=True)
-    serve(app, host='127.0.0.1', port=5000)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=5000)
+    args = parser.parse_args()
+    print(f" * Running on http://127.0.0.1:{args.port}", flush=True)
+    serve(app, host='127.0.0.1', port=args.port)
