@@ -16,7 +16,7 @@ To evaluate our agent's performance, we will use benchmark agents, such as BFS a
 Main responsibilities for each team member:
 
 - Łukasz, Julia: implementation of the game environment, including the game state representation, legal move generation, and game rules enforcement, writing core of the project report.
-- XXX <privacy reasons>: implementation of RL algorithms, such as Q-learning and SARSA, and integration with the game environment.
+- XXX [privacy reasons]: implementation of RL algorithms, such as Q-learning and SARSA, and integration with the game environment.
 - Bartek, Franek: implementation of the AlphaZero-like algorithm, benchmark agents, integration with the game environment, evaluation of methods and improving final model.
 
 Milestones:
