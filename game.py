@@ -36,13 +36,13 @@ class PawnDirections:
         self.down_and_right = (self.down[0] + self.right[0], self.down[1] + self.right[1])
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class PawnAction:
     """Action to move the pawn in a given direction."""
     direction: tuple  # e.g., (0, 1) for up
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class WallAction:
     """
     Action to place a wall of length 2 on the board.
