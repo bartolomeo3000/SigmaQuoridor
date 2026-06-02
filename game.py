@@ -36,13 +36,13 @@ class PawnDirections:
         self.down_and_right = (self.down[0] + self.right[0], self.down[1] + self.right[1])
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True)
 class PawnAction:
     """Action to move the pawn in a given direction."""
     direction: tuple  # e.g., (0, 1) for up
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True)
 class WallAction:
     """
     Action to place a wall of length 2 on the board.
@@ -81,6 +81,10 @@ ALL_PAWN_DIRECTIONS = (
 # -> list[WallAction].  Legal wall actions are fully determined by these four
 # values, so this cache is valid across all states with the same configuration
 # and survives copy()/next(), making it useful for MCTS transpositions.
+#
+# Set to False on large boards (e.g. 9x9 / 10 walls) where the key space is
+# too large to get cache hits — the unbounded dict growth causes RAM overflow.
+WALL_ACTIONS_CACHE_ENABLED: bool = False
 _WALL_ACTIONS_CACHE: dict = {}
 
 
@@ -166,6 +170,21 @@ class State:
         """Increment the occurrence count of the current position in history."""
         key = self._position_key()
         self.position_history[key] = self.position_history.get(key, 0) + 1
+
+    def _prospective_pawn_key(self, dest: tuple) -> tuple:
+        """
+        Return the position key the state would have after moving the current
+        player's pawn to ``dest``, without creating a full state copy.
+
+        Wall anchors are unchanged by pawn moves, so we reuse the current
+        frozensets.  Depth increments by 1, flipping whose turn it is.
+        """
+        frozen_h = frozenset(self.hwall_anchors)
+        frozen_v = frozenset(self.vwall_anchors)
+        if self.is_player1_turn():
+            return (dest, self.player2pos, (self.depth + 1) % 2, frozen_h, frozen_v)
+        else:
+            return (self.player1pos, dest, (self.depth + 1) % 2, frozen_h, frozen_v)
 
     def _recompute_dists(self):
         """Recompute dist grids and path-edge sets from current walls and positions."""
@@ -265,13 +284,93 @@ class State:
     def is_player1_turn(self):
         return self.depth % 2 == 0
 
+    def _pawn_dest(self, action: 'PawnAction') -> tuple:
+        """
+        Return the destination cell (x, y) for a legal pawn action without
+        modifying state.  Mirrors the jump logic in move_pawn().
+        """
+        dx, dy = action.direction
+        if self.is_player1_turn():
+            cx, cy = self.player1pos
+            opp_pos = self.player2pos
+        else:
+            cx, cy = self.player2pos
+            opp_pos = self.player1pos
+        if dx == 0 or dy == 0:
+            tx, ty = cx + dx, cy + dy
+            if (tx, ty) == opp_pos:
+                return (cx + 2 * dx, cy + 2 * dy)  # straight jump
+            return (tx, ty)
+        else:
+            return (cx + dx, cy + dy)  # diagonal go-around jump
+
+    def compute_move_advantages(self, legal_actions: list) -> list:
+        """
+        For each legal action return  opp_dist_after - my_dist_after  where
+        distances are shortest-path steps to each player's own goal row.
+        Positive = current player is relatively closer to their goal.
+
+        Pawn moves  : exact, using pre-computed dist grids (O(1) per action).
+        Wall moves  : approximate — +1 to opp_dist / my_dist when the wall
+                      crosses an edge on that player's cached shortest path.
+        """
+        if self.is_player1_turn():
+            my_pos         = self.player1pos
+            opp_pos        = self.player2pos
+            my_dist_grid   = self.p1_dist
+            opp_dist_grid  = self.p2_dist
+            my_path_edges  = self.p1_path_edges
+            opp_path_edges = self.p2_path_edges
+        else:
+            my_pos         = self.player2pos
+            opp_pos        = self.player1pos
+            my_dist_grid   = self.p2_dist
+            opp_dist_grid  = self.p1_dist
+            my_path_edges  = self.p2_path_edges
+            opp_path_edges = self.p1_path_edges
+
+        my_dist_now  = my_dist_grid[my_pos[1]][my_pos[0]]
+        opp_dist_now = opp_dist_grid[opp_pos[1]][opp_pos[0]]
+
+        result = []
+        for action in legal_actions:
+            if isinstance(action, PawnAction):
+                dest_x, dest_y = self._pawn_dest(action)
+                my_dist_after  = my_dist_grid[dest_y][dest_x]
+                opp_dist_after = opp_dist_now  # opponent didn't move, walls unchanged
+            else:  # WallAction
+                x, y, ori = action.x, action.y, action.orientation
+                if ori == 'h':
+                    segs = (('h', y, x), ('h', y, x + 1))
+                else:
+                    segs = (('v', y, x), ('v', y + 1, x))
+                opp_delta = 0
+                my_delta  = 0
+                if opp_path_edges is not None:
+                    for s in segs:
+                        if s in opp_path_edges:
+                            opp_delta = 1
+                            break
+                if my_path_edges is not None:
+                    for s in segs:
+                        if s in my_path_edges:
+                            my_delta = 1
+                            break
+                my_dist_after  = my_dist_now  + my_delta
+                opp_dist_after = opp_dist_now + opp_delta
+            # Subtract baseline so bonus = change in relative advantage, not absolute value.
+            result.append((opp_dist_after - my_dist_after) - (opp_dist_now - my_dist_now))
+        return result
+
     def is_drawn(self):
-        """Game is drawn at depth 100 or on threefold repetition of any position."""
-        if self.depth >= 100:
-            return True
-        if max(self.position_history.values(), default=0) >= 3:
-            return True
-        return False
+        """Game is drawn when depth 200 is reached (move-count limit).
+
+        Threefold repetition is handled by making the third-visit move
+        *illegal* in ``_get_legal_pawn_actions``, so it can no longer
+        trigger a draw here.  The depth-200 fallback remains so that games
+        with genuinely no escape still terminate.
+        """
+        return self.depth >= 200
     
     def winner(self):
         """Check if either player has won by reaching the opposite side of the board."""
@@ -298,13 +397,29 @@ class State:
         return False
 
     def _get_legal_pawn_actions(self) -> List[PawnAction]:
-        """Return all legal pawn moves from the current position."""
+        """Return all legal pawn moves, excluding those that would create a
+        third occurrence of any board position.
+
+        Wall moves are never repetitions (each placement permanently changes
+        the board key), so only pawn moves need this filter.
+
+        Fallback: if every pawn move would be a third repetition (extremely
+        rare — requires the player to have no walls and to have visited every
+        reachable cell twice), all pawn moves are returned unfiltered so the
+        game can still progress; it will eventually end at depth 200.
+        """
         actions = []
         for d in ALL_PAWN_DIRECTIONS:
             action = PawnAction(direction=d)
             if self.is_pawn_move_legal(action):
                 actions.append(action)
-        return actions
+
+        history = self.position_history
+        filtered = [
+            a for a in actions
+            if history.get(self._prospective_pawn_key(self._pawn_dest(a)), 0) < 2
+        ]
+        return filtered if filtered else actions
 
     def _build_overlap_sets(self) -> tuple[set, set]:
         """
@@ -332,13 +447,14 @@ class State:
 
         # Legal wall actions depend only on wall config and player positions,
         # not on depth or whose turn it is — safe to cache globally.
-        cache_key = (
-            frozenset(self.hwall_anchors), frozenset(self.vwall_anchors),
-            self.player1pos, self.player2pos,
-        )
-        cached = _WALL_ACTIONS_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+        if WALL_ACTIONS_CACHE_ENABLED:
+            cache_key = (
+                frozenset(self.hwall_anchors), frozenset(self.vwall_anchors),
+                self.player1pos, self.player2pos,
+            )
+            cached = _WALL_ACTIONS_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
 
         N = self.boardsize
         h_illegal, v_illegal = self._build_overlap_sets()
@@ -389,7 +505,8 @@ class State:
                         if p1_ok and p2_ok:
                             actions.append(WallAction(x, y, 'v'))
 
-        _WALL_ACTIONS_CACHE[cache_key] = actions
+        if WALL_ACTIONS_CACHE_ENABLED:
+            _WALL_ACTIONS_CACHE[cache_key] = actions
         return actions
 
     def get_legal_actions(self) -> List[Action]:
