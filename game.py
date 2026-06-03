@@ -363,14 +363,14 @@ class State:
         return result
 
     def is_drawn(self):
-        """Game is drawn when depth 200 is reached (move-count limit).
-
-        Threefold repetition is handled by making the third-visit move
-        *illegal* in ``_get_legal_pawn_actions``, so it can no longer
-        trigger a draw here.  The depth-200 fallback remains so that games
-        with genuinely no escape still terminate.
+        """Game is drawn when the move-count limit is reached, or when no legal
+        moves remain (all pawn moves are third repetitions and no walls are left).
         """
-        return self.depth >= 200
+        if self.depth >= 200:
+            return True
+        if not self.get_legal_actions():
+            return True
+        return False
     
     def winner(self):
         """Check if either player has won by reaching the opposite side of the board."""
@@ -403,10 +403,9 @@ class State:
         Wall moves are never repetitions (each placement permanently changes
         the board key), so only pawn moves need this filter.
 
-        Fallback: if every pawn move would be a third repetition (extremely
-        rare — requires the player to have no walls and to have visited every
-        reachable cell twice), all pawn moves are returned unfiltered so the
-        game can still progress; it will eventually end at depth 200.
+        If every pawn move would be a third repetition and the player has no
+        walls left, an empty list is returned — get_legal_actions() will return
+        empty, and is_drawn() will detect that and end the game.
         """
         actions = []
         for d in ALL_PAWN_DIRECTIONS:
@@ -419,7 +418,7 @@ class State:
             a for a in actions
             if history.get(self._prospective_pawn_key(self._pawn_dest(a)), 0) < 2
         ]
-        return filtered if filtered else actions
+        return filtered
 
     def _build_overlap_sets(self) -> tuple[set, set]:
         """

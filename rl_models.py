@@ -4,9 +4,9 @@ from pathlib import Path
 
 import numpy as np
 
-from game import action_to_index, action_space_size, flip_policy_lr, index_to_action, ALL_PAWN_DIRECTIONS, PawnAction, WallAction
+from game import action_to_index, action_space_size, PawnAction, WallAction
 
-BOARDSIZE = 5
+BOARDSIZE = 7
 
 seed = 0
 dtype = np.float16
@@ -18,22 +18,7 @@ class BaseAgent(ABC):
     def __init__(self, boardsize=BOARDSIZE, seed=seed):
         self.boardsize = boardsize
         self.num_actions = action_space_size(boardsize)
-
         self.rng = np.random.default_rng(seed)
-
-        W = boardsize - 1
-        self.action_index_map = {}
-
-        for i, d in enumerate(ALL_PAWN_DIRECTIONS):
-            self.action_index_map[PawnAction(d)] = i
-
-        for y in range(W):
-            for x in range(W):
-                self.action_index_map[WallAction(x, y, 'h')] = 8 + y * W + x
-                self.action_index_map[WallAction(x, y, 'v')] = 8 + W * W + y * W + x
-
-        self.state_key_cache = {}
-        self._legal_action_indices_cache = {}
 
     def __str__(self):
         return self.__class__.__name__
@@ -112,16 +97,17 @@ class BaseAgent(ABC):
 
         n_h = len(state.hwalls)
         n_v = len(state.vwalls)
+        cb = (N - 1).bit_length()  # bits needed per coordinate: 3 for 7x7, 4 for 9x9
         base = (
             p1x |
-            (p1y << 3) |
-            (p2x << 6) |
-            (p2y << 9) |
-            (hbits << 12) |
-            (vbits << (12 + n_h)) |
-            (state.walls_p1 << (12 + n_h + n_v)) |
-            (state.walls_p2 << (18 + n_h + n_v)) |
-            (state.get_current_player() << (24 + n_h + n_v))
+            (p1y << cb) |
+            (p2x << (2 * cb)) |
+            (p2y << (3 * cb)) |
+            (hbits << (4 * cb)) |
+            (vbits << (4 * cb + n_h)) |
+            (state.walls_p1 << (4 * cb + n_h + n_v)) |
+            (state.walls_p2 << (4 * cb + n_h + n_v + cb)) |
+            (state.get_current_player() << (4 * cb + n_h + n_v + 2 * cb))
         )
 
         mp1x = N - 1 - p1x
@@ -143,14 +129,14 @@ class BaseAgent(ABC):
 
         mirrored = (
             mp1x |
-            (p1y << 3) |
-            (mp2x << 6) |
-            (p2y << 9) |
-            (mhbits << 12) |
-            (mvbits << (12 + n_h)) |
-            (state.walls_p1 << (12 + n_h + n_v)) |
-            (state.walls_p2 << (18 + n_h + n_v)) |
-            (state.get_current_player() << (24 + n_h + n_v))
+            (p1y << cb) |
+            (mp2x << (2 * cb)) |
+            (p2y << (3 * cb)) |
+            (mhbits << (4 * cb)) |
+            (mvbits << (4 * cb + n_h)) |
+            (state.walls_p1 << (4 * cb + n_h + n_v)) |
+            (state.walls_p2 << (4 * cb + n_h + n_v + cb)) |
+            (state.get_current_player() << (4 * cb + n_h + n_v + 2 * cb))
         )
 
         # key = min(base, mirrored)
@@ -162,7 +148,7 @@ class BaseAgent(ABC):
         return min(base, mirrored)
     
     def _action_to_index_cached(self, action):
-        return self.action_index_map[action]
+        return action_to_index(action, self.boardsize)
     
     def _reflect_position(self, pos):
         x, y = pos
@@ -175,39 +161,43 @@ class BaseAgent(ABC):
         reflected.player1pos = self._reflect_position(state.player1pos)
         reflected.player2pos = self._reflect_position(state.player2pos)
 
-        reflected.hwalls = bytearray(len(state.hwalls))
-        reflected.vwalls = bytearray(len(state.vwalls))
+        reflected.hwalls = bytearray(N * N)
+        reflected.vwalls = bytearray(N * N)
 
-        for y in range(N):
-            for x in range(N):
-                reflected.hwalls[y * N + (N - 1 - x)] = state.hwalls[y * N + x]
-                reflected.vwalls[y * N + (N - 2 - x)] = state.vwalls[y * N + x]
+        reflected.hwall_anchors = {(N - 2 - x, y) for x, y in state.hwall_anchors}
+        reflected.vwall_anchors = {(N - 2 - x, y) for x, y in state.vwall_anchors}
 
-        reflected.hwall_anchors = {((N - 2) - x, y) for x, y in state.hwall_anchors}
-        reflected.vwall_anchors = {((N - 2) - x, y) for x, y in state.vwall_anchors}
+        for ax, ay in reflected.hwall_anchors:
+            reflected.hwalls[ay * N + ax] = 1
+            reflected.hwalls[ay * N + ax + 1] = 1
+        for ax, ay in reflected.vwall_anchors:
+            reflected.vwalls[ay * N + ax] = 1
+            reflected.vwalls[(ay + 1) * N + ax] = 1
 
         reflected._recompute_dists()
         reflected._legal_actions_cache = None
         return reflected
 
     def _reflect_action(self, action):
-        probs = np.zeros(self.num_actions, dtype=dtype)
-        probs[action_to_index(action, self.boardsize)] = 1.0
-        return index_to_action(int(flip_policy_lr(probs, self.boardsize).argmax()), self.boardsize)
+        if isinstance(action, PawnAction):
+            dx, dy = action.direction
+            return PawnAction(direction=(-dx, dy))
+        return WallAction(x=self.boardsize - 2 - action.x, y=action.y, orientation=action.orientation)
 
     def _reflect_transition(self, state, action, next_state):
         return self._reflect_state(state), self._reflect_action(action), self._reflect_state(next_state)
 
     @abstractmethod
-    def select_action(self, state):
+    def select_action(self, state, training=True):
+        pass
+
+    @abstractmethod
+    def get_policy(self, state) -> list:
+        """Return [(action, probability), ...] sorted by descending probability."""
         pass
 
     @abstractmethod
     def update(self, state, action, reward, next_state, done):
-        pass
-
-    @abstractmethod
-    def get_policy(self, state):
         pass
 
 
@@ -255,41 +245,16 @@ class TDZeroLearningBaseAgent(BaseAgent):
             self.visit_counts_dict[state_key] = n
         return n
     
-    def _safe_legal_actions(self, state):
-        actions = state.get_legal_actions()
-        if actions is not None and len(actions) > 0:
-            return actions
-
-        state._legal_actions_cache = None
-        actions = state.get_legal_actions()
-
-        if actions is not None and len(actions) > 0:
-            return actions
-
-        pawn = state._get_legal_pawn_actions()
-        return pawn if len(pawn) > 0 else [PawnAction(direction=(0, 1))]
-    
     def _legal_action_indices(self, state):
-        # s = self.state_to_key(state)
-        # result = self._legal_action_indices_cache.get(s)
-        # if result is not None:
-        #     return result
-
-        actions = self._safe_legal_actions(state)
+        actions = state.get_legal_actions()
         indices = np.empty(len(actions), dtype=np.int16)
 
         for i, a in enumerate(actions):
-            indices[i] = self.action_index_map[a]
-
-        #result = (actions, indices)
-        #self._legal_action_indices_cache[s] = result
+            indices[i] = self._action_to_index_cached(a)
         return (actions, indices)
     
     def _policy_probs(self, state):
         legal_actions, indices = self._legal_action_indices(state)
-        if len(legal_actions) == 0:
-            return legal_actions, indices, np.empty(0, dtype=dtype)
-        
         n = len(indices)
         probs = np.full(n, self.epsilon / n, dtype=dtype)
 
@@ -298,58 +263,34 @@ class TDZeroLearningBaseAgent(BaseAgent):
 
         return legal_actions, indices, probs
     
-    def select_action(self, state):
+    def select_action(self, state, training=True):
         legal_actions, indices = self._legal_action_indices(state)
-        if len(legal_actions) == 0:
-            return PawnAction(direction=(0, 1))
-        
         s = self._state_to_key(state)
 
-        # visit_counts = self.visit_counts_dict
-        # Q = self.Q
-
-        # n = visit_counts.get(s)
-        # if n is None:
-        #     n = np.zeros(self.num_actions, dtype=dtype_int)
-        #     visit_counts[s] = n
-
-        # q = Q.get(s)
-        # if q is None:
-        #     q = np.zeros(self.num_actions, dtype=dtype)
-        #     Q[s] = q
-
-        # counts = n[indices]
+        if not training:
+            return self.get_policy(state)[0][0]
 
         visit_counts = self._visit_counts(s)
         q = self._q_values(s, self.Q)
         counts = np.array([visit_counts.get(int(i), 0) for i in indices], dtype=dtype_int)
-
-        scores = np.nan_to_num(np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype) + self.ucb_c * np.sqrt(np.log((counts.sum() + 1) + 1) / (counts + 1)), self.eps) #q[indices]
+        scores = np.nan_to_num(np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype) + self.ucb_c * np.sqrt(np.log((counts.sum() + 1) + 1) / (counts + 1)), self.eps)
 
         max_idxs = np.flatnonzero(scores == scores.max())
         return legal_actions[max_idxs[self.rng.integers(len(max_idxs))]]
-    
-    def get_policy(self, state, epsilon=0.003):
-        # actions, _, probs = self.policy_probs(state)
-        # return list(zip(actions, probs))
 
+    def get_policy(self, state) -> list:
         legal_actions, indices = self._legal_action_indices(state)
-        n = len(legal_actions)
-        if n == 0:
-            return PawnAction(direction=(0, 1))
-        
-        if epsilon is not None and self.rng.random() < epsilon:
-            return legal_actions[self.rng.integers(n)]
-
         q = self._q_values(self._state_to_key(state), self.Q)
         qvals = np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype)
+        best = int(np.argmax(qvals))
+        probs = [1.0 if i == best else 0.0 for i in range(len(legal_actions))]
+        policy = list(zip(legal_actions, probs))
+        policy.sort(key=lambda x: x[1], reverse=True)
+        return policy
 
-        max_idxs = np.flatnonzero(qvals == qvals.max())
-        return legal_actions[max_idxs[self.rng.integers(len(max_idxs))]]
-    
     def _update_single(self, state, action, reward, next_state, is_terminal_state):
         s = self._state_to_key(state)
-        a = self.action_index_map[action]
+        a = self._action_to_index_cached(action)
 
         visit_counts = self._visit_counts(s)
         visit_counts[a] = visit_counts.get(a, 0) + 1
@@ -383,26 +324,17 @@ class TDZeroLearningBaseAgent(BaseAgent):
 class QLearningAgent(TDZeroLearningBaseAgent):
     def _update_policy(self, next_state, ns):
         indices = self._legal_action_indices(next_state)[1]
-        if len(indices) == 0:
-            return 0.0
-
         q = self._q_values(ns, self.Q)
         return max((q.get(int(i), 0.0) for i in indices), default=0.0)
     
 class SarsaAgent(TDZeroLearningBaseAgent):
     def _update_policy(self, next_state, ns):
         actions, _, probs = self._policy_probs(next_state)
-        if len(actions) == 0:
-            return 0.0
-        
         return self._q_values(ns, self.Q).get(self._action_to_index_cached(actions[self.rng.choice(len(actions), p=probs)]), 0.0)
 
 class ExpectedSarsaAgent(TDZeroLearningBaseAgent):
     def _update_policy(self, next_state, ns):
         _, indices, probs = self._policy_probs(next_state)
-        if len(indices) == 0:
-            return 0.0
-        
         q = self._q_values(ns, self.Q)
         return np.dot(probs, np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype))
     
@@ -414,37 +346,37 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
         self.QA = {}
         self.QB = {}
 
-    def select_action(self, state):
+    def select_action(self, state, training=True):
         legal_actions, indices = self._legal_action_indices(state)
-        if len(legal_actions) == 0:
-            return PawnAction(direction=(0, 1))
-
         s = self._state_to_key(state)
-
-        #visit_counts = self.visit_counts_dict
-        # # n = visit_counts.get(s)
-        # # if n is None:
-        # #     n = np.zeros(self.num_actions, dtype=np.dtype_int)
-        # #     visit_counts[s] = n
-        # counts = n[indices]
-
-        visit_counts = self._visit_counts(s)
-        counts = np.array([visit_counts.get(int(i), 0) for i in indices], dtype=dtype_int)
 
         qa = self._q_values(s, self.QA)
         qb = self._q_values(s, self.QB)
 
-        #scores = np.nan_to_num((self.q_values(s, self.QA) + self.q_values(s, self.QB))[indices] + self.ucb_c * np.sqrt(np.log((counts.sum() + 1) + 1) / (counts + 1)), self.eps)
+        if not training:
+            return self.get_policy(state)[0][0]
+
+        visit_counts = self._visit_counts(s)
+        counts = np.array([visit_counts.get(int(i), 0) for i in indices], dtype=dtype_int)
         scores = np.nan_to_num(np.array([qa.get(int(i), 0.0) + qb.get(int(i), 0.0) for i in indices], dtype=dtype) +
                                self.ucb_c * np.sqrt(np.log((counts.sum() + 1) + 1) / (counts + 1)), self.eps)
         max_idxs = np.flatnonzero(scores == scores.max())
         return legal_actions[max_idxs[self.rng.integers(len(max_idxs))]]
 
+    def get_policy(self, state) -> list:
+        legal_actions, indices = self._legal_action_indices(state)
+        s = self._state_to_key(state)
+        qa = self._q_values(s, self.QA)
+        qb = self._q_values(s, self.QB)
+        qvals = np.array([qa.get(int(i), 0.0) + qb.get(int(i), 0.0) for i in indices], dtype=dtype)
+        best = int(np.argmax(qvals))
+        probs = [1.0 if i == best else 0.0 for i in range(len(legal_actions))]
+        policy = list(zip(legal_actions, probs))
+        policy.sort(key=lambda x: x[1], reverse=True)
+        return policy
+
     def _policy_probs(self, state):
         legal_actions, indices = self._legal_action_indices(state)
-        if len(legal_actions) == 0:
-            return legal_actions, indices, np.empty(0, dtype=dtype)
-
         n = len(indices)
         probs = np.full(n, self.epsilon / n, dtype=dtype)
 
@@ -456,26 +388,9 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
 
         return legal_actions, indices, probs
 
-    def get_policy(self, state, epsilon=0.003):
-        legal_actions, indices = self._legal_action_indices(state)
-        n = len(legal_actions)
-        if n == 0:
-            return PawnAction(direction=(0, 1))
-        
-        if epsilon is not None and self.rng.random() < epsilon:
-            return legal_actions[self.rng.integers(n)]
-
-        s = self._state_to_key(state)
-        qa = self._q_values(s, self.QA)
-        qb = self._q_values(s, self.QB)
-        qvals = np.array([qa.get(int(i), 0.0) + qb.get(int(i), 0.0) for i in indices], dtype=dtype)
-
-        max_idxs = np.flatnonzero(qvals == qvals.max())
-        return legal_actions[max_idxs[self.rng.integers(len(max_idxs))]]
-
     def _update_single(self, state, action, reward, next_state, is_terminal_state):
         s = self._state_to_key(state)
-        a = self.action_index_map[action]
+        a = self._action_to_index_cached(action)
 
         visit_counts = self._visit_counts(s)
         visit_counts[a]  = visit_counts.get(a, 0) + 1
@@ -502,9 +417,6 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
 class DoubleQLearningAgent(DoubleTDZeroLearningBaseAgent):
     def _double_update_policy(self, next_state, ns, update_a):
         indices = self._legal_action_indices(next_state)[1]
-        if len(indices) == 0:
-            return 0.0
-        
         qa = self._q_values(ns, self.QA)
         qb = self._q_values(ns, self.QB)
         qa_vals = np.array([qa.get(int(i), 0.0) for i in indices], dtype=dtype)
@@ -516,19 +428,12 @@ class DoubleQLearningAgent(DoubleTDZeroLearningBaseAgent):
 class DoubleSarsaAgent(DoubleTDZeroLearningBaseAgent):
     def _double_update_policy(self, next_state, ns, update_a):
         actions, _, probs = self._policy_probs(next_state)
-        n = len(actions)
-        if n == 0:
-            return 0.0
-        
         return self._q_values(ns, self.QB if update_a else self.QA).get(self._action_to_index_cached(actions[self.rng.choice(len(actions), p=probs)]), 0.0)
 
 
 class DoubleExpectedSarsaAgent(DoubleTDZeroLearningBaseAgent):
     def _double_update_policy(self, next_state, ns, update_a):
         _, indices, probs = self._policy_probs(next_state)
-        if len(indices) == 0:
-            return 0.0
-
         q = self._q_values(ns, self.QB if update_a else self.QA)
         return np.dot(probs, np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype))
     

@@ -641,7 +641,7 @@ class MCTSAgent:
         policy.sort(key=lambda x: x[1], reverse=True)
         return policy
 
-    def select_action(self, state: State) -> Action:
+    def select_action(self, state: State, **kwargs) -> Action:
         """
         Run MCTS and return a single action sampled from the visit distribution.
 
