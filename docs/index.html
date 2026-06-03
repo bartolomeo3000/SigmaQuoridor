@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Injects COOP/COEP headers via Service Worker on hosts that don't set
+       them (e.g. GitHub Pages). Required for SharedArrayBuffer / ORT WASM.
+       On local dev serve.py already sets the headers, so the SW is a no-op. -->
+  <script src="coi-serviceworker.js"></script>
+  <meta charset="UTF-8">
+  <title>SigmaQuoridor</title>
+  <style>
+    :root {
+      --bg:      #111111;
+      --surface: #1a1a1a;
+      --border:  #333333;
+      --text:    #e0e0e0;
+      --muted:   #888888;
+      --blue:    #888888;
+      --red:     #f85149;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: var(--text);
+      padding: 24px;
+    }
+
+    #layout {
+      position: relative;
+    }
+
+    #sidebar {
+      position: absolute;
+      left: calc(100% + 32px);
+      top: 0;
+      width: 196px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    #board-wrap {
+      background: #1e1b18;
+      border-radius: 14px;
+      padding: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.7),
+                  0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    canvas { display: block; }
+
+    /* ── card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .card-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.4px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    /* ── player rows ── */
+    .player-entry {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+    .player-entry + .player-entry { margin-top: 4px; }
+
+    .player-entry.active-p1 {
+      background: rgba(63,185,80,0.12);
+      box-shadow: inset 0 0 0 1px rgba(63,185,80,0.35);
+    }
+    .player-entry.active-p2 {
+      background: rgba(248,81,73,0.12);
+      box-shadow: inset 0 0 0 1px rgba(248,81,73,0.35);
+    }
+
+    .pawn-dot {
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .pawn-dot.blue { background: #3fb950; box-shadow: 0 0 6px #3fb950; }
+    .pawn-dot.red  { background: var(--red);  box-shadow: 0 0 6px var(--red);  }
+
+    .player-name { font-size: 13px; font-weight: 600; flex: 1; }
+    .wall-count  { font-size: 12px; color: var(--muted); }
+
+    /* ── status ── */
+    #status-text { font-size: 14px; font-weight: 600; }
+    #status-sub  { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    /* ── button ── */
+    button {
+      width: 100%;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 9px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    button:hover { background: var(--surface); border-color: var(--muted); }
+
+    /* ── agent select ── */
+    .agent-select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      margin-bottom: 8px;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    .agent-select:focus { outline: none; border-color: var(--muted); }
+    .agent-select option:disabled { color: var(--muted); }
+
+    /* ── mode selector ── */
+    .mode-btn-group { display: flex; gap: 6px; }
+    .mode-btn { flex: 1; padding: 7px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
+    .mode-btn.active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
+
+    /* ── thinking animation ── */
+    @keyframes thinking-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+    #status-text.thinking { animation: thinking-pulse 1.2s ease-in-out infinite; }
+
+    /* ── board column (board + nn panel stacked) ── */
+    #board-col {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      align-items: center;
+    }
+
+    /* ── NN channel viewer ── */
+    #nn-panel {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px 24px;
+    }
+    #nn-panel.open { display: block; }
+    #nn-panel-inner {}
+    #nn-panel h2 {
+      font-size: 15px; font-weight: 700;
+      margin-bottom: 16px; color: var(--text);
+    }
+    .nn-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+    .nn-channel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .nn-channel-name {
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1px;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .nn-channel canvas { display: block; }
+
+    /* ── Analysis panel ── */
+    #analysis-panel {
+      display: none;
+      position: absolute;
+      right: calc(100% + 24px);
+      top: 0;
+      width: 340px;
+      max-height: 90vh;
+      overflow-y: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px 24px;
+    }
+    #analysis-panel.open { display: block; }
+    #analysis-panel h2 { font-size: 15px; font-weight: 700; margin-bottom: 16px; }
+    .analysis-section { margin-bottom: 18px; }
+    .analysis-section-title {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1.4px; color: var(--muted); margin-bottom: 8px;
+    }
+    .win-bar-track {
+      height: 16px; border-radius: 8px; background: var(--bg);
+      overflow: hidden; display: flex; margin-bottom: 6px;
+    }
+    .win-bar-p1 { height: 100%; background: #3fb950; transition: width 0.3s; min-width: 2px; }
+    .win-bar-p2 { height: 100%; background: #f85149; flex: 1; }
+    .win-bar-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+    .move-bar-list { display: flex; flex-direction: column; gap: 4px; max-height: 340px; overflow-y: auto; }
+    .move-bar-row { display: grid; grid-template-columns: 72px 1fr 78px; gap: 6px; align-items: center; cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.15s; }
+    .move-bar-row:hover { background: rgba(255,255,255,0.06); }
+    .move-bar-label {
+      font-family: 'Consolas', 'SF Mono', monospace; font-size: 11px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .move-bar-label.pawn { color: #3fb950; }
+    .move-bar-label.wall { color: #d97f2e; }
+    .move-bar-track { height: 14px; border-radius: 4px; background: var(--bg); position: relative; }
+    .move-bar-nn {
+      position: absolute; top: 0; left: 0; height: 8px; border-radius: 2px;
+      background: rgba(63,185,80,0.75); transition: width 0.3s;
+    }
+    .move-bar-mcts {
+      position: absolute; bottom: 0; left: 0; height: 6px; border-radius: 2px;
+      background: rgba(248,81,73,0.85); transition: width 0.3s;
+    }
+    .move-bar-pct { text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .mcts-sims-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .mcts-sims-row span { font-size: 11px; color: var(--muted); flex: 1; }
+    #analysis-sims-display { font-size: 12px; font-weight: 600; }
+    #btn-run-mcts.running { animation: thinking-pulse 1.2s ease-in-out infinite; pointer-events: none; }
+  </style>
+</head>
+<body>
+
+<div id="layout">
+
+<div id="sidebar">
+  <div class="card">
+    <div class="card-label">Players</div>
+    <div class="player-entry" id="pe-p1">
+      <div class="pawn-dot blue"></div>
+      <span class="player-name" id="name-p1">Player 1</span>
+      <span class="wall-count" id="walls-p1"></span>
+    </div>
+    <div class="player-entry" id="pe-p2">
+      <div class="pawn-dot red"></div>
+      <span class="player-name" id="name-p2">Player 2</span>
+      <span class="wall-count" id="walls-p2"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Status</div>
+    <div id="status-text">Loading…</div>
+    <div id="status-sub"></div>
+    <div id="status-ply" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Mode</div>
+    <div class="mode-btn-group">
+      <button class="mode-btn" data-mode="hvh">H vs H</button>
+      <button class="mode-btn active" data-mode="hva">H vs AI</button>
+      <button class="mode-btn" data-mode="avh">AI vs H</button>
+    </div>
+  </div>
+
+  <div class="card" id="agent-card">
+    <div class="card-label">Agent</div>
+    <select id="agent-select" class="agent-select"></select>
+    <div id="agent-desc" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
+      <span id="sims-display" style="font-size:12px;font-weight:600">200</span>
+    </div>
+    <input id="sims-slider" type="range" min="50" max="2000" step="50" value="200"
+           style="width:100%;accent-color:#3fb950;cursor:pointer">
+  </div>
+
+  <button id="btn-reset">&#x21BA; New Game</button>
+  <button id="btn-undo">&#x21A9; Undo Move</button>
+  <button id="btn-nn">&#x1F9E0; NN Channels</button>
+  <button id="btn-analysis">&#x1F4CA; Analysis</button>
+</div>
+
+<div id="board-col">
+  <div id="board-wrap">
+    <canvas id="board"></canvas>
+  </div>
+
+  <div id="nn-panel">
+    <div id="nn-panel-inner">
+      <h2>NN Input Channels</h2>
+      <div id="nn-note" style="font-size:11px;color:var(--muted);margin-bottom:16px"></div>
+      <div class="nn-grid" id="nn-grid"></div>
+    </div>
+  </div>
+
+</div>
+
+<div id="analysis-panel">
+  <h2>Analysis</h2>
+  <div class="analysis-section">
+    <div class="analysis-section-title">Win Probability</div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:4px">NN</div>
+    <div class="win-bar-track">
+      <div class="win-bar-p1" id="analysis-win-bar-p1" style="width:50%"></div>
+      <div class="win-bar-p2"></div>
+    </div>
+    <div class="win-bar-labels">
+      <span id="analysis-win-p1-label">P1: 50%</span>
+      <span id="analysis-win-p2-label">P2: 50%</span>
+    </div>
+    <div id="mcts-value-row" style="display:none">
+      <div style="font-size:10px;color:var(--muted);margin-top:8px;margin-bottom:4px">MCTS</div>
+      <div class="win-bar-track">
+        <div class="win-bar-p1" id="analysis-mcts-bar-p1" style="width:50%"></div>
+        <div class="win-bar-p2"></div>
+      </div>
+      <div class="win-bar-labels">
+        <span id="analysis-mcts-p1-label">P1: 50%</span>
+        <span id="analysis-mcts-p2-label">P2: 50%</span>
+      </div>
+    </div>
+  </div>
+  <div class="analysis-section">
+    <div class="analysis-section-title" id="analysis-moves-title">NN Policy (top 20)</div>
+    <div class="move-bar-list" id="analysis-move-bars"></div>
+  </div>
+  <div class="analysis-section" style="margin-bottom:0">
+    <div class="analysis-section-title">MCTS Analysis</div>
+    <div class="mcts-sims-row">
+      <span>Simulations</span>
+      <span id="analysis-sims-display">200</span>
+    </div>
+    <input id="analysis-sims-slider" type="range" min="50" max="2000" step="50" value="200"
+           style="width:100%;accent-color:#f85149;cursor:pointer;margin-bottom:8px">
+    <button id="btn-run-mcts">&#x25B6; Run MCTS Analysis</button>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" id="chk-auto-mcts" style="accent-color:#f85149;cursor:pointer">
+      Auto-run on each move
+    </label>
+  </div>
+</div>
+
+</div>
+
+<!-- Game engine (must load before inline script) -->
+<script src="game.js"></script>
+<script>
+// ── Constants ────────────────────────────────────────────────────────────────
+const DEFAULT_BOARDSIZE = 7;
+const DEFAULT_WALLS     = 5;
+
+// ── Layout ───────────────────────────────────────────────────────────────────
+const CELL   = 62;
+const GAP    = 10;
+const STEP   = CELL + GAP;
+const CELL_R = 5;
+const LABEL  = 20;
+
+// ── Colours ───────────────────────────────────────────────────────────────────
+const CLR = {
+  cell:             '#7a6a58',
+  cellGoal1:        '#3a6e3a',
+  cellGoal2:        '#6e3030',
+  cellLegal:        '#2a4a7a',
+  cellLegalRing:    '#7ab8ff',
+  wall:             '#b5611a',
+  wallGlow:         'rgba(181,97,26,0.55)',
+  wallHoverOk:      'rgba(220,140,40,0.62)',
+  wallHoverOkGlow:  'rgba(220,140,40,0.7)',
+  wallHoverBad:     'rgba(210,55,55,0.50)',
+  wallHoverBadGlow: 'rgba(210,55,55,0.6)',
+  pawn1:            '#3fb950',
+  pawn2:            '#f85149',
+  pawnStroke:       'rgba(255,255,255,0.7)',
+};
+
+// ── Game state ───────────────────────────────────────────────────────────────
+// `gameState` is the canonical State instance.
+// `state` is a plain serialized object (same format as Flask /api/state) used
+//   by all rendering / interaction code — never modified except by applyState().
+let gameState    = null;
+const gameHistory = [];   // Stack of State instances for undo
+
+let state          = null;
+let landing        = [];
+let hoverWall      = null;
+let _hoverWallTimer = null;
+let _pendingWall   = null;
+let hoverCell      = null;
+let analysisHoverMove = null;
+let legalWallSet   = new Set();
+let gameMode       = 'hva';
+let numSimulations = 200;
+let selectedAgentId = 'alphazero';
+let _agentList      = [];
+let agentThinking   = false;
+let _searchGen      = 0;
+let _nnAvailable    = false;
+let _nnLoadFailed   = false;
+
+// ── Web Worker ───────────────────────────────────────────────────────────────
+let _worker = null;
+
+function getWorker() {
+  if (!_worker) {
+    _worker = new Worker('mcts_worker.js');
+    _worker.onmessage = handleWorkerMessage;
+    _worker.onerror   = e => console.error('[worker]', e);
+  }
+  return _worker;
+}
+
+function workerPayload(gs) {
+  return {
+    boardsize:        gs.boardsize,
+    depth:            gs.depth,
+    player1pos:       gs.player1pos,
+    player2pos:       gs.player2pos,
+    hwalls:           Array.from(gs.hwalls),
+    vwalls:           Array.from(gs.vwalls),
+    walls_p1:         gs.walls_p1,
+    walls_p2:         gs.walls_p2,
+    walls_initial:    gs.walls_initial,
+    hwall_anchors:    [...gs.hwall_anchors],
+    vwall_anchors:    [...gs.vwall_anchors],
+    position_history: [...gs.position_history.entries()],
+  };
+}
+
+function handleWorkerMessage(e) {
+  const d = e.data;
+
+  if (d.type === 'model_loaded') {
+    _nnAvailable = true;
+    _nnLoadFailed = false;
+    initAgentList();
+    return;
+  }
+
+  if (d.type === 'model_failed') {
+    console.error('[main] ONNX model failed to load:', d.reason);
+    _nnLoadFailed = true;
+    initAgentList();   // update dropdown to show (unavailable)
+    return;
+  }
+
+  if (d.type === 'move') {
+    agentThinking = false;
+    if (d.gen !== _searchGen) return;  // stale result from superseded search
+    if (!gameState || gameState.isFinished()) return;
+    postMove(d.action);
+    return;
+  }
+
+  if (d.type === 'nn_result') {
+    if (d.gen !== _analysisGen) return;
+    _analysisNnData = d;
+    renderAnalysis();
+    document.getElementById('btn-run-mcts').disabled = false;
+    return;
+  }
+
+  if (d.type === 'nn_unavailable') {
+    if (d.gen !== _analysisGen) return;
+    // Fallback: show uniform distribution placeholder
+    _analysisNnData = null;
+    renderAnalysis();
+    return;
+  }
+
+  if (d.type === 'mcts_result') {
+    if (d.gen !== _analysisGen) return;
+    _analysisMctsData = d;
+    _analysisMctsRunning = false;
+    const btn = document.getElementById('btn-run-mcts');
+    btn.classList.remove('running');
+    btn.textContent = '\u25B6 Run MCTS Analysis';
+    renderAnalysis();
+    return;
+  }
+}
+
+// ── Coordinate helpers ────────────────────────────────────────────────────────
+function cellOrigin(gx, gy) {
+  return { x: gx * STEP, y: (state.boardsize - 1 - gy) * STEP };
+}
+function canvasSize() { return state.boardsize * STEP - GAP; }
+
+function pixelToCell(px, py) {
+  const col    = Math.floor(px / STEP);
+  const row    = Math.floor(py / STEP);
+  const localX = px - col * STEP;
+  const localY = py - row * STEP;
+  if (localX >= CELL || localY >= CELL) return null;
+  const gy = state.boardsize - 1 - row;
+  if (col < 0 || col >= state.boardsize || gy < 0 || gy >= state.boardsize) return null;
+  return { gx: col, gy };
+}
+
+function computeLanding() {
+  if (!state || state.is_finished) return [];
+  const [cx, cy] = state.current_player === 1 ? state.player1pos : state.player2pos;
+  const [ox, oy] = state.current_player === 1 ? state.player2pos : state.player1pos;
+  return state.legal_pawn_moves.map(([dx, dy]) => {
+    let gx, gy;
+    if (dx === 0 || dy === 0) {
+      gx = (cx + dx === ox && cy + dy === oy) ? cx + 2 * dx : cx + dx;
+      gy = (cx + dx === ox && cy + dy === oy) ? cy + 2 * dy : cy + dy;
+    } else { gx = cx + dx; gy = cy + dy; }
+    return { gx, gy, dir: [dx, dy] };
+  });
+}
+
+function computeLegalWallSet() {
+  if (!state || state.is_finished) return new Set();
+  return new Set(state.legal_wall_moves.map(w => `${w.orientation}:${w.x}:${w.y}`));
+}
+
+function pixelToWall(px, py) {
+  if (!state) return null;
+  const bs   = state.boardsize;
+  const modX = ((px % STEP) + STEP) % STEP;
+  const modY = ((py % STEP) + STEP) % STEP;
+  const inHGap = modY >= CELL;
+  const inVGap = modX >= CELL;
+  if (!inHGap && !inVGap) return null;
+  const gapRowIdx = Math.floor((py - CELL) / STEP);
+  const gapColIdx = Math.floor((px - CELL) / STEP);
+  let hCand = null, vCand = null;
+  if (inHGap) {
+    const ay = bs - 2 - gapRowIdx;
+    if (ay >= 0 && ay <= bs - 2) {
+      const ax = Math.max(0, Math.min(bs - 2, Math.round((px - CELL - GAP / 2) / STEP)));
+      if (px >= ax * STEP && px <= ax * STEP + 2 * CELL + GAP)
+        hCand = { ax, ay, orientation: 'h' };
+    }
+  }
+  if (inVGap) {
+    const ax = gapColIdx;
+    if (ax >= 0 && ax <= bs - 2) {
+      const ay = Math.max(0, Math.min(bs - 2,
+        Math.round((bs - 2) - (py - CELL - GAP / 2) / STEP)));
+      const wallTop = (bs - 2 - ay) * STEP;
+      if (py >= wallTop && py <= wallTop + 2 * CELL + GAP)
+        vCand = { ax, ay, orientation: 'v' };
+    }
+  }
+  if (!hCand && !vCand) return null;
+  if (hCand && !vCand) return hCand;
+  if (!hCand && vCand) return vCand;
+  const hCenterY = (bs - 2 - hCand.ay) * STEP + CELL + GAP / 2;
+  const vCenterX = vCand.ax * STEP + CELL + GAP / 2;
+  return Math.abs(px - vCenterX) < Math.abs(py - hCenterY) - GAP / 2 ? vCand : hCand;
+}
+
+// ── roundRect polyfill ────────────────────────────────────────────────────────
+function rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); }
+  else {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y,     x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x,     y + h, r);
+    ctx.arcTo(x,     y + h, x,     y,     r);
+    ctx.arcTo(x,     y,     x + w, y,     r);
+    ctx.closePath();
+  }
+}
+
+// ── Draw ──────────────────────────────────────────────────────────────────────
+function draw(ctx) {
+  const W = canvasSize() + LABEL;
+  const H = canvasSize() + LABEL;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#1e1b18';
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(LABEL, 0);
+  drawCells(ctx);
+  drawWalls(ctx);
+  drawWallPreview(ctx);
+  drawAnalysisHover(ctx);
+  drawPawns(ctx);
+  ctx.restore();
+  drawLabels(ctx);
+}
+
+function drawLabels(ctx) {
+  const bs = state.boardsize;
+  ctx.fillStyle = 'rgba(200,180,160,0.5)';
+  ctx.font = `${Math.round(LABEL * 0.6)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let gy = 0; gy < bs; gy++) {
+    ctx.fillText(String(gy), LABEL / 2, (bs - 1 - gy) * STEP + CELL / 2);
+  }
+  for (let gx = 0; gx < bs; gx++) {
+    ctx.fillText(String(gx), LABEL + gx * STEP + CELL / 2, canvasSize() + LABEL / 2);
+  }
+}
+
+function drawCells(ctx) {
+  const bs       = state.boardsize;
+  const legalSet = new Set(landing.map(l => `${l.gx},${l.gy}`));
+  for (let gy = 0; gy < bs; gy++) {
+    for (let gx = 0; gx < bs; gx++) {
+      const { x, y }  = cellOrigin(gx, gy);
+      const isLegal    = legalSet.has(`${gx},${gy}`);
+      const fill       = gy === bs - 1 ? CLR.cellGoal1 : gy === 0 ? CLR.cellGoal2 : CLR.cell;
+      rrect(ctx, x, y, CELL, CELL, CELL_R);
+      ctx.fillStyle = fill; ctx.fill();
+      if (isLegal) {
+        ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      if (isLegal && hoverCell && hoverCell.gx === gx && hoverCell.gy === gy) {
+        rrect(ctx, x, y, CELL, CELL, CELL_R);
+        ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.65)'; ctx.lineWidth = 2; ctx.stroke();
+      }
+    }
+  }
+}
+
+function drawOneWall(ctx, ax, ay, orientation) {
+  const bs = state.boardsize;
+  if (orientation === 'h') {
+    rrect(ctx, ax * STEP, (bs - 2 - ay) * STEP + CELL, 2 * CELL + GAP, GAP, 3);
+  } else {
+    rrect(ctx, ax * STEP + CELL, (bs - 2 - ay) * STEP, GAP, 2 * CELL + GAP, 3);
+  }
+  ctx.fill();
+}
+
+function drawWalls(ctx) {
+  ctx.shadowBlur = 6;
+  ctx.fillStyle   = CLR.wall;
+  ctx.shadowColor = CLR.wallGlow;
+  for (const [ax, ay] of state.hwall_anchors) drawOneWall(ctx, ax, ay, 'h');
+  for (const [ax, ay] of state.vwall_anchors) drawOneWall(ctx, ax, ay, 'v');
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur  = 0;
+}
+
+function drawWallPreview(ctx) {
+  if (!hoverWall || state.is_finished || isAgentTurn()) return;
+  const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+  if (!hasWalls) return;
+  const key   = `${hoverWall.orientation}:${hoverWall.ax}:${hoverWall.ay}`;
+  const legal = legalWallSet.has(key);
+  ctx.fillStyle   = legal ? CLR.wallHoverOk  : CLR.wallHoverBad;
+  ctx.shadowColor = legal ? CLR.wallHoverOkGlow : CLR.wallHoverBadGlow;
+  ctx.shadowBlur  = 10;
+  drawOneWall(ctx, hoverWall.ax, hoverWall.ay, hoverWall.orientation);
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
+}
+
+function drawPawns(ctx) {
+  drawOnePawn(ctx, state.player1pos[0], state.player1pos[1], CLR.pawn1, String(state.walls_p1));
+  drawOnePawn(ctx, state.player2pos[0], state.player2pos[1], CLR.pawn2, String(state.walls_p2));
+}
+
+function drawOnePawn(ctx, gx, gy, color, label) {
+  const { x, y } = cellOrigin(gx, gy);
+  const cx = x + CELL / 2, cy = y + CELL / 2, r = CELL * 0.30;
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 4;
+  const grad = ctx.createRadialGradient(cx - r * 0.28, cy - r * 0.3, r * 0.05, cx, cy, r);
+  grad.addColorStop(0, lighten(color, 60)); grad.addColorStop(0.6, color); grad.addColorStop(1, darken(color, 40));
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+  const shine = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.35, 0, cx - r * 0.2, cy - r * 0.25, r * 0.55);
+  shine.addColorStop(0, 'rgba(255,255,255,0.28)'); shine.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.fillStyle = shine; ctx.fill();
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
+  ctx.fillStyle = '#fff';
+  ctx.font = `700 ${Math.round(CELL * 0.26)}px 'Segoe UI', system-ui, sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, cx, cy);
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+}
+
+function lighten(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${Math.min(255,(n>>16)+amt)},${Math.min(255,((n>>8)&0xff)+amt)},${Math.min(255,(n&0xff)+amt)})`;
+}
+function darken(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${Math.max(0,(n>>16)-amt)},${Math.max(0,((n>>8)&0xff)-amt)},${Math.max(0,(n&0xff)-amt)})`;
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+function updateSidebar() {
+  document.getElementById('walls-p1').textContent = `${state.walls_p1} wall${state.walls_p1 !== 1 ? 's' : ''}`;
+  document.getElementById('walls-p2').textContent = `${state.walls_p2} wall${state.walls_p2 !== 1 ? 's' : ''}`;
+  document.getElementById('name-p1').textContent = gameMode === 'avh' ? currentAgentName() : 'Player 1';
+  document.getElementById('name-p2').textContent = gameMode === 'hva' ? currentAgentName() : 'Player 2';
+  const pe1 = document.getElementById('pe-p1');
+  const pe2 = document.getElementById('pe-p2');
+  pe1.className = 'player-entry' + (state.current_player === 1 && !state.is_finished ? ' active-p1' : '');
+  pe2.className = 'player-entry' + (state.current_player === 2 && !state.is_finished ? ' active-p2' : '');
+  document.getElementById('status-ply').textContent = `Ply ${state.depth}`;
+  const txt = document.getElementById('status-text');
+  const sub = document.getElementById('status-sub');
+  if (agentThinking) {
+    txt.className = 'thinking';
+    txt.textContent = 'Thinking…';
+    sub.textContent = `${currentAgentName()} · ${numSimulations} simulations`;
+  } else if (state.is_finished) {
+    txt.className = '';
+    txt.textContent = state.winner ? `Player ${state.winner} wins! 🎉` : 'Draw';
+    sub.textContent = state.winner ? 'Game over' : 'Max depth reached';
+  } else {
+    txt.className = '';
+    const name = (gameMode === 'avh' && state.current_player === 1) ? currentAgentName()
+               : (gameMode === 'hva' && state.current_player === 2) ? currentAgentName()
+               : `Player ${state.current_player}`;
+    txt.textContent = `${name}'s turn`;
+    sub.textContent = state.current_player === 1 ? 'Green — reach the top row'
+                                                  : 'Red — reach the bottom row';
+  }
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+function setupInput(canvas) {
+  canvas.addEventListener('click', e => {
+    if (!state || state.is_finished || agentThinking || isAgentTurn()) return;
+    const { px, py } = canvasPos(e, canvas);
+    const cell = pixelToCell(px, py);
+    if (cell) {
+      const match = landing.find(l => l.gx === cell.gx && l.gy === cell.gy);
+      if (match) { postMove({ type: 'pawn', direction: match.dir }); return; }
+    }
+    const wall = pixelToWall(px, py);
+    if (wall) {
+      const key      = `${wall.orientation}:${wall.ax}:${wall.ay}`;
+      const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+      if (hasWalls && legalWallSet.has(key))
+        postMove({ type: 'wall', x: wall.ax, y: wall.ay, orientation: wall.orientation });
+    }
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    if (!state || state.is_finished) return;
+    const { px, py } = canvasPos(e, canvas);
+    if (agentThinking || isAgentTurn()) {
+      if (hoverWall || hoverCell) { hoverWall = null; hoverCell = null; draw(canvas.getContext('2d')); }
+      clearTimeout(_hoverWallTimer); _hoverWallTimer = null; _pendingWall = null;
+      canvas.style.cursor = 'default'; return;
+    }
+    const cell       = pixelToCell(px, py);
+    const onLegalCell = cell && landing.some(l => l.gx === cell.gx && l.gy === cell.gy);
+    const newHoverCell = onLegalCell ? cell : null;
+    const wall      = pixelToWall(px, py);
+    const hasWalls  = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+    const newHover  = (wall && hasWalls) ? wall : null;
+    const newKey    = newHover ? `${newHover.orientation}:${newHover.ax}:${newHover.ay}` : null;
+    const pendingKey = _pendingWall ? `${_pendingWall.orientation}:${_pendingWall.ax}:${_pendingWall.ay}` : null;
+    let needRedraw  = false;
+    if (newKey !== pendingKey) {
+      clearTimeout(_hoverWallTimer); _hoverWallTimer = null;
+      _pendingWall = newHover;
+      if (hoverWall) { hoverWall = null; needRedraw = true; }
+      if (newHover) {
+        _hoverWallTimer = setTimeout(() => {
+          _hoverWallTimer = null; hoverWall = _pendingWall;
+          if (hoverWall) draw(document.getElementById('board').getContext('2d'));
+        }, 50);
+      }
+    }
+    const newCellKey = newHoverCell ? `${newHoverCell.gx},${newHoverCell.gy}` : null;
+    const curCellKey = hoverCell    ? `${hoverCell.gx},${hoverCell.gy}` : null;
+    if (newCellKey !== curCellKey) { hoverCell = newHoverCell; needRedraw = true; }
+    if (needRedraw) draw(canvas.getContext('2d'));
+    canvas.style.cursor = (onLegalCell || (wall && hasWalls)) ? 'pointer' : 'default';
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    clearTimeout(_hoverWallTimer); _hoverWallTimer = null; _pendingWall = null;
+    if (hoverWall || hoverCell) {
+      hoverWall = null; hoverCell = null;
+      draw(document.getElementById('board').getContext('2d'));
+    }
+  });
+}
+
+function canvasPos(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  return { px: e.clientX - rect.left - LABEL, py: e.clientY - rect.top };
+}
+
+// ── Game actions ──────────────────────────────────────────────────────────────
+function bodyToAction(body) {
+  if (body.type === 'pawn') return { type: 'pawn', direction: body.direction };
+  return { type: 'wall', x: body.x, y: body.y, orientation: body.orientation };
+}
+
+function postMove(body) {
+  if (!gameState || gameState.isFinished()) return;
+  gameHistory.push(gameState);
+  gameState = gameState.next(bodyToAction(body));
+  applyState(gameState.serialize());
+}
+
+function initGame(boardsize = DEFAULT_BOARDSIZE, walls = DEFAULT_WALLS) {
+  gameState = new State({ boardsize, walls_p1: walls, walls_p2: walls });
+  applyState(gameState.serialize());
+}
+
+function resetGame() {
+  _searchGen++;
+  agentThinking = false;
+  gameHistory.length = 0;
+  initGame();
+}
+
+function undoMove() {
+  if (agentThinking) { _searchGen++; agentThinking = false; }
+  const count     = gameMode === 'hvh' ? 1 : 2;
+  const available = Math.min(count, gameHistory.length);
+  if (!available) return;
+  for (let i = 0; i < available; i++) gameState = gameHistory.pop();
+  applyState(gameState.serialize());
+}
+
+function applyState(s) {
+  state        = s;
+  landing      = computeLanding();
+  legalWallSet = computeLegalWallSet();
+  hoverWall    = null;
+  const cvs    = document.getElementById('board');
+  cvs.width    = canvasSize() + LABEL;
+  cvs.height   = canvasSize() + LABEL;
+  draw(cvs.getContext('2d'));
+  if (!agentThinking && isAgentTurn() && !state.is_finished)
+    agentThinking = true;
+  updateSidebar();
+  if (document.getElementById('nn-panel').classList.contains('open')) openNNPanel();
+  if (document.getElementById('analysis-panel').classList.contains('open')) {
+    _analysisMctsData = null;
+    refreshNnAnalysis();
+    if (_analysisMctsAuto && !isAgentTurn() && !state.is_finished) runMctsAnalysis();
+  }
+  if (isAgentTurn() && !state.is_finished) setTimeout(triggerAgentMove, 80);
+}
+
+// ── Agent ─────────────────────────────────────────────────────────────────────
+function isAgentTurn() {
+  if (!state || state.is_finished) return false;
+  return (gameMode === 'hva' && state.current_player === 2)
+      || (gameMode === 'avh' && state.current_player === 1);
+}
+
+function triggerAgentMove() {
+  if (!state || state.is_finished || !agentThinking) return;
+  const gen = ++_searchGen;
+  updateSidebar();
+  const w = getWorker();
+  w.postMessage({
+    ...workerPayload(gameState),
+    type:     'think',
+    numSims:  numSimulations,
+    agentId:  selectedAgentId,
+    gen,
+  });
+}
+
+// ── Agent selector ────────────────────────────────────────────────────────────
+const AGENT_DEFS = [
+  { id: 'alphazero',    name: 'SigmaQuoridor',  description: 'MCTS guided by a trained neural network' },
+  { id: 'mcts_rollout', name: 'MCTS · Rollout', description: 'Pure MCTS with random rollouts' },
+];
+
+function initAgentList() {
+  _agentList = AGENT_DEFS.map(a => ({
+    ...a,
+    available: a.id === 'mcts_rollout' || _nnAvailable,
+  }));
+  const sel = document.getElementById('agent-select');
+  sel.innerHTML = '';
+  for (const a of _agentList) {
+    const opt       = document.createElement('option');
+    opt.value       = a.id;
+    const suffix    = a.available ? '' : (_nnLoadFailed ? ' (unavailable)' : ' (loading…)');
+    opt.textContent = a.name + suffix;
+    opt.disabled    = !a.available;
+    if (a.id === selectedAgentId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  // If selected agent became available or unavailable, pick best available
+  const current = _agentList.find(a => a.id === selectedAgentId && a.available);
+  if (!current) {
+    const first = _agentList.find(a => a.available);
+    if (first) { selectedAgentId = first.id; sel.value = first.id; }
+  }
+  _updateAgentDesc();
+}
+
+function _updateAgentDesc() {
+  const a = _agentList.find(a => a.id === selectedAgentId);
+  document.getElementById('agent-desc').textContent = a ? a.description : '';
+}
+
+function currentAgentName() {
+  const a = _agentList.find(a => a.id === selectedAgentId);
+  return a ? a.name : 'AI';
+}
+
+// ── NN channel viewer ─────────────────────────────────────────────────────────
+function renderChannel(canvas, matrix, showNumbers) {
+  const N   = matrix.length;
+  const S   = showNumbers ? Math.max(28, Math.floor(200 / N)) : Math.max(4, Math.floor(200 / N));
+  const dpr = showNumbers ? (window.devicePixelRatio || 1) : 1;
+  const logW = N * S;
+  canvas.width  = logW * dpr; canvas.height = logW * dpr;
+  canvas.style.width  = logW + 'px'; canvas.style.height = logW + 'px';
+  canvas.style.imageRendering = showNumbers ? 'auto' : 'pixelated';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const v = matrix[N - 1 - y][x];
+      const c = Math.round(v * 255);
+      ctx.fillStyle = `rgb(${c},${c},${c})`;
+      ctx.fillRect(x * S, y * S, S, S);
+      if (showNumbers) {
+        const raw = Math.round(v * showNumbers * 1e4) / 1e4;
+        ctx.fillStyle = v > 0.5 ? '#000' : '#fff';
+        ctx.font = `bold ${Math.round(S * 0.35)}px monospace`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(String(Math.round(raw)), x * S + S / 2, y * S + S / 2);
+      }
+    }
+  }
+}
+
+function openNNPanel() {
+  if (!gameState) return;
+  const N      = gameState.boardsize;
+  const flat   = gameState.toNNInput();  // Float32Array [8*N*N]
+  const names  = ['My pawn','Opp. pawn','H-walls','V-walls','My walls left','Opp. walls left','My BFS dist','Opp. BFS dist'];
+  const wi     = gameState.walls_initial > 0 ? gameState.walls_initial : 1;
+  const md     = N * N - 1;
+  const scales = [1, 1, 1, 1, wi, wi, md, md];
+
+  document.getElementById('nn-note').textContent =
+    `Player ${gameState.getCurrentPlayer()}'s turn (board shown from their perspective — moving up)`;
+  const grid = document.getElementById('nn-grid');
+  grid.innerHTML = '';
+  for (let ch = 0; ch < 8; ch++) {
+    // Convert flat channel to 2D matrix[row][col] for renderChannel
+    const matrix = [];
+    for (let y = 0; y < N; y++) {
+      const row = [];
+      for (let x = 0; x < N; x++) row.push(flat[ch * N * N + y * N + x]);
+      matrix.push(row);
+    }
+    const div   = document.createElement('div');   div.className = 'nn-channel';
+    const lbl   = document.createElement('div');   lbl.className = 'nn-channel-name';
+    lbl.textContent = `ch${ch}: ${names[ch]}`;
+    const cvs   = document.createElement('canvas');
+    div.appendChild(lbl); div.appendChild(cvs);
+    grid.appendChild(div);
+    renderChannel(cvs, matrix, ch >= 4 ? scales[ch] : 0);
+  }
+  document.getElementById('nn-panel').classList.add('open');
+}
+
+// ── Analysis panel ────────────────────────────────────────────────────────────
+let analysisNumSims      = 200;
+let _analysisMctsRunning = false;
+let _analysisMctsAuto    = false;
+let _analysisNnData      = null;
+let _analysisMctsData    = null;
+let _analysisGen         = 0;
+
+function openAnalysisPanel() {
+  document.getElementById('analysis-panel').classList.add('open');
+  _analysisMctsData = null;
+  refreshNnAnalysis();
+}
+
+function refreshNnAnalysis() {
+  if (!gameState || gameState.isFinished()) return;
+  if (!_nnAvailable) {
+    _analysisNnData = null;
+    renderAnalysis();
+    return;
+  }
+  const gen = ++_analysisGen;
+  const w   = getWorker();
+  w.postMessage({
+    ...workerPayload(gameState),
+    type:    'nn_eval',
+    numSims: analysisNumSims,
+    agentId: selectedAgentId,
+    gen,
+  });
+}
+
+function renderAnalysis() {
+  const nn   = _analysisNnData;
+  const mcts = _analysisMctsData;
+
+  const p1Name = gameMode === 'avh' ? currentAgentName() : 'P1';
+  const p2Name = gameMode === 'hva' ? currentAgentName() : 'P2';
+
+  if (nn) {
+    const curP   = nn.current_player;
+    const p1Win  = Math.round((curP === 1 ? (nn.value + 1) / 2 : (1 - nn.value) / 2) * 100);
+    document.getElementById('analysis-win-bar-p1').style.width = p1Win + '%';
+    document.getElementById('analysis-win-p1-label').textContent = `${p1Name}: ${p1Win}%`;
+    document.getElementById('analysis-win-p2-label').textContent = `${p2Name}: ${100 - p1Win}%`;
+  }
+
+  const mctsValRow = document.getElementById('mcts-value-row');
+  if (mcts) {
+    const m1Win = Math.round((mcts.current_player === 1 ? (mcts.value+1)/2 : (1-mcts.value)/2) * 100);
+    document.getElementById('analysis-mcts-bar-p1').style.width = m1Win + '%';
+    document.getElementById('analysis-mcts-p1-label').textContent = `${p1Name}: ${m1Win}%`;
+    document.getElementById('analysis-mcts-p2-label').textContent = `${p2Name}: ${100-m1Win}%`;
+    mctsValRow.style.display = '';
+  } else {
+    mctsValRow.style.display = 'none';
+  }
+
+  document.getElementById('analysis-moves-title').textContent =
+    mcts ? 'Move Probabilities  (green NN↑  red MCTS↓, sorted by MCTS)' : 'NN Policy (top 20)';
+
+  let top;
+  if (mcts && nn) {
+    const merged = new Map();
+    for (const m of (nn.moves || []))   merged.set(m.label, { label: m.label, nnProb: m.prob, mctsProb: 0 });
+    for (const m of (mcts.moves || [])) {
+      if (merged.has(m.label)) merged.get(m.label).mctsProb = m.prob;
+      else merged.set(m.label, { label: m.label, nnProb: 0, mctsProb: m.prob });
+    }
+    top = [...merged.values()].sort((a, b) => b.mctsProb - a.mctsProb).slice(0, 20);
+  } else if (nn) {
+    top = (nn.moves || []).slice(0, 20).map(m => ({ label: m.label, nnProb: m.prob, mctsProb: 0 }));
+  } else if (mcts) {
+    top = (mcts.moves || []).slice(0, 20).map(m => ({ label: m.label, nnProb: 0, mctsProb: m.prob }));
+  } else {
+    return;
+  }
+
+  const maxP      = top.length ? Math.max(mcts ? top[0].mctsProb : top[0].nnProb, 1e-6) : 1;
+  const container = document.getElementById('analysis-move-bars');
+  container.innerHTML = '';
+  const cvs = document.getElementById('board');
+
+  for (const move of top) {
+    const isPawn = move.label[0] !== 'H' && move.label[0] !== 'V';
+    const nnW    = Math.min(100, move.nnProb   / maxP * 100).toFixed(1);
+    const mctsW  = Math.min(100, move.mctsProb / maxP * 100).toFixed(1);
+    const row    = document.createElement('div');  row.className = 'move-bar-row';
+    const lbl    = document.createElement('span'); lbl.className = 'move-bar-label ' + (isPawn ? 'pawn' : 'wall');
+    lbl.textContent = move.label; lbl.title = move.label;
+    const track  = document.createElement('div'); track.className = 'move-bar-track';
+    const bNN    = document.createElement('div'); bNN.className = 'move-bar-nn'; bNN.style.width = nnW + '%';
+    track.appendChild(bNN);
+    if (mcts) {
+      const bM = document.createElement('div'); bM.className = 'move-bar-mcts'; bM.style.width = mctsW + '%';
+      track.appendChild(bM);
+    }
+    const pct = document.createElement('span'); pct.className = 'move-bar-pct';
+    pct.textContent = mcts
+      ? `${(move.nnProb*100).toFixed(1)}|${(move.mctsProb*100).toFixed(1)}`
+      : `${(move.nnProb*100).toFixed(1)}%`;
+    row.appendChild(lbl); row.appendChild(track); row.appendChild(pct);
+    row.addEventListener('click', () => playAnalysisMove(move.label));
+    const _hov = parseAnalysisHover(move.label);
+    if (_hov) {
+      row.addEventListener('mouseenter', () => { analysisHoverMove = _hov; draw(cvs.getContext('2d')); });
+      row.addEventListener('mouseleave', () => { analysisHoverMove = null; draw(cvs.getContext('2d')); });
+    }
+    container.appendChild(row);
+  }
+}
+
+function drawAnalysisHover(ctx) {
+  if (!analysisHoverMove || !state) return;
+  if (analysisHoverMove.type === 'wall') {
+    const { ax, ay, orientation } = analysisHoverMove;
+    ctx.fillStyle = CLR.wallHoverOk; ctx.shadowColor = CLR.wallHoverOkGlow; ctx.shadowBlur = 10;
+    drawOneWall(ctx, ax, ay, orientation);
+    ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
+  } else {
+    const { gx, gy } = analysisHoverMove;
+    const { x, y }   = cellOrigin(gx, gy);
+    rrect(ctx, x, y, CELL, CELL, CELL_R);
+    ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+const _ARROW_DIR = {
+  '\u2191':[0,1],'\u2193':[0,-1],'\u2190':[-1,0],'\u2192':[1,0],
+  '\u2196':[-1,1],'\u2197':[1,1],'\u2199':[-1,-1],'\u2198':[1,-1],
+};
+
+function parseAnalysisHover(label) {
+  const wm = label.match(/^([HV])\((\d+),(\d+)\)$/);
+  if (wm) return { type: 'wall', orientation: wm[1]==='H'?'h':'v', ax: parseInt(wm[2]), ay: parseInt(wm[3]) };
+  const pm = label.match(/^.\((\d+),(\d+)\)$/);
+  if (pm) return { type: 'pawn', gx: parseInt(pm[1]), gy: parseInt(pm[2]) };
+  return null;
+}
+
+function playAnalysisMove(label) {
+  if (state.is_finished) return;
+  const m = label.match(/^([HV])\((\d+),(\d+)\)$/);
+  if (m) { postMove({ type:'wall', orientation: m[1]==='H'?'h':'v', x: parseInt(m[2]), y: parseInt(m[3]) }); return; }
+  const pm = label.match(/^(.)\((\d+),(\d+)\)$/);
+  if (pm) { const dir = _ARROW_DIR[pm[1]]; if (dir) postMove({ type:'pawn', direction: dir }); }
+}
+
+function runMctsAnalysis() {
+  if (_analysisMctsRunning || !gameState || gameState.isFinished()) return;
+  _analysisMctsRunning = true;
+  const btn = document.getElementById('btn-run-mcts');
+  btn.classList.add('running'); btn.textContent = '⏳ Running…';
+  const gen = ++_analysisGen;
+  const w   = getWorker();
+  w.postMessage({
+    ...workerPayload(gameState),
+    type:    'mcts_analysis',
+    numSims: analysisNumSims,
+    agentId: selectedAgentId,
+    gen,
+  });
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('board');
+setupInput(canvas);
+
+document.getElementById('btn-reset').addEventListener('click', resetGame);
+document.getElementById('btn-undo').addEventListener('click', undoMove);
+document.getElementById('btn-nn').addEventListener('click', () => {
+  const panel = document.getElementById('nn-panel');
+  if (panel.classList.contains('open')) panel.classList.remove('open');
+  else openNNPanel();
+});
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.mode === gameMode) return;
+    gameMode = btn.dataset.mode;
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('agent-card').style.display = gameMode === 'hvh' ? 'none' : '';
+    hoverWall = null;
+    draw(document.getElementById('board').getContext('2d'));
+    updateSidebar();
+    if (state && !state.is_finished && !agentThinking && isAgentTurn())
+      setTimeout(triggerAgentMove, 80);
+  });
+});
+document.getElementById('sims-slider').addEventListener('input', e => {
+  numSimulations = Number(e.target.value);
+  document.getElementById('sims-display').textContent = numSimulations;
+});
+document.getElementById('agent-select').addEventListener('change', e => {
+  selectedAgentId = e.target.value;
+  _updateAgentDesc();
+  if (gameMode === 'hvh') return;
+  _searchGen++; agentThinking = false;
+  updateSidebar();
+  if (state && !state.is_finished && isAgentTurn()) setTimeout(triggerAgentMove, 80);
+});
+document.getElementById('btn-analysis').addEventListener('click', () => {
+  const panel = document.getElementById('analysis-panel');
+  if (panel.classList.contains('open')) panel.classList.remove('open');
+  else openAnalysisPanel();
+});
+document.getElementById('analysis-sims-slider').addEventListener('input', e => {
+  analysisNumSims = Number(e.target.value);
+  document.getElementById('analysis-sims-display').textContent = analysisNumSims;
+});
+document.getElementById('btn-run-mcts').addEventListener('click', runMctsAnalysis);
+document.getElementById('chk-auto-mcts').addEventListener('change', e => {
+  _analysisMctsAuto = e.target.checked;
+  if (_analysisMctsAuto && document.getElementById('analysis-panel').classList.contains('open')
+      && state && !state.is_finished && !isAgentTurn())
+    runMctsAnalysis();
+});
+
+// Kick off the worker early so ONNX loads in the background
+getWorker();
+// Initial agent list (may show alphazero as loading until model loads)
+initAgentList();
+// Start the game
+initGame();
+</script>
+</body>
+</html>
