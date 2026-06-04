@@ -19,10 +19,11 @@ from rl_models import BOARDSIZE, QLearningAgent, SarsaAgent, ExpectedSarsaAgent,
 
 from mcts import MCTSAgent
 from dual_network import NNEvaluator, load_model
+from benchmark_agents import RandomAgent, GreedyDistanceAgent
 
 
 #BOARDSIZE = 5
-WALLS = 5
+WALLS = 1
 
 SEED = 0
 PROCESSES = cpu_count() - 1
@@ -35,9 +36,9 @@ MODELS_DIR = Path(f"models_{BOARDSIZE}x{BOARDSIZE}_with_{WALLS}_walls")
 CHECKPOINT_DIR = MODELS_DIR / "checkpoints"
 BEST_DIR = MODELS_DIR / "best"
 
-REFERENCE_MODEL_PATH = Path("models_7x7/supervised_extended.pt")
+REFERENCE_MODEL_PATH = Path("models_5x5/supervised_extended.pt")
 REFERENCE_MODEL_SCORES_PATH = BEST_DIR / "scores"
-REFERENCE_MODEL_NUM_SIMULATIONS = 100
+REFERENCE_MODEL_NUM_SIMULATIONS = 1
 
 GLOBAL_EVAL_AGENT_A = None
 GLOBAL_EVAL_AGENT_B = None
@@ -118,23 +119,27 @@ def load_best_models(agent_a, agent_b):
     agent_b_compressed_path = BEST_DIR / f"{agent_b_name}_compressed.pkl" if agent_b is not None else None
 
 
-    if not agent_a_path.exists():
-        print(f"Missing uncompressed model for {agent_a_name}, falling back to compressed version.")
-        if not agent_a_compressed_path.exists():
-            raise FileNotFoundError(f"Missing best agent_a model: {agent_a_name}")
+    a_exists = agent_a_path.exists() or agent_a_compressed_path.exists()
+    if not a_exists:
+        print(f"No saved model for {agent_a_name}, starting fresh.")
 
-    if agent_b is not None and not agent_b_path.exists():
-        print(f"Missing uncompressed model for {agent_b_name}, falling back to compressed version.")
-        if not agent_b_compressed_path.exists():
-            raise FileNotFoundError(f"Missing best agent_b model: {agent_b_name}")
+    if agent_b is not None:
+        b_exists = agent_b_path.exists() or agent_b_compressed_path.exists()
+        if not b_exists:
+            print(f"No saved model for {agent_b_name}, starting fresh.")
 
     agent_a = agent_a()
-    agent_a.load(agent_a_path if agent_a_path.exists() else agent_a_compressed_path)
-
+    if a_exists:
+        if not agent_a_path.exists():
+            print(f"Missing uncompressed model for {agent_a_name}, falling back to compressed version.")
+        agent_a.load(agent_a_path if agent_a_path.exists() else agent_a_compressed_path)
 
     if agent_b is not None:
         agent_b = agent_b()
-        agent_b.load(agent_b_path if agent_b_path.exists() else agent_b_compressed_path)
+        if b_exists:
+            if not agent_b_path.exists():
+                print(f"Missing uncompressed model for {agent_b_name}, falling back to compressed version.")
+            agent_b.load(agent_b_path if agent_b_path.exists() else agent_b_compressed_path)
     else:
         model = load_model(agent_b_path)
         model.eval()
@@ -270,7 +275,7 @@ def init_pool_worker(results=None):
     GLOBAL_RESULTS = results
 
 def train_worker(args):
-    worker_id, run_dir, agent_a, agent_b, epochs, boardsize, walls, checkpoint_every, evaluate_every = args
+    worker_id, run_dir, agent_a, agent_b, epochs, boardsize, walls, checkpoint_every = args
 
     rng = np.random.default_rng(SEED + worker_id)
     max_seed = 2**31 - 1
@@ -283,24 +288,15 @@ def train_worker(args):
     try:
         agent_a, agent_b, start_epoch = load_checkpoint(run_dir, worker_id, agent_a, agent_b)
 
-        best_agent_a = copy.deepcopy(agent_a)
-        best_agent_b = copy.deepcopy(agent_b)
-        score1 = None
-        score2 = None
-
         iterator = tqdm(range(start_epoch, epochs), leave=False) if worker_id == 0 else range(start_epoch, epochs)
         for epoch in iterator:
             self_play_episode(agent_a, agent_b, boardsize, walls)
 
             if (epoch + 1) % checkpoint_every == 0:
                 save_checkpoint(run_dir, worker_id, agent_a, agent_b, epoch + 1)
-                # print(f"\nWorker {worker_id}")
                 print(f"\nCheckpoint saved at epoch {epoch + 1}/{epochs}")
 
-            if (epoch + 1) % evaluate_every == 0:
-                best_agent_a, best_agent_b, score1, score2 = maybe_update_best(agent_a, agent_b, best_agent_a, best_agent_b, boardsize, walls, games=evaluate_every // 10)
-
-        return {"worker_id": worker_id, "agent_a": best_agent_a, "agent_b": best_agent_b, 'score1': score1, 'score2': score2}
+        return {"worker_id": worker_id, "agent_a": agent_a, "agent_b": agent_b, 'score1': None, 'score2': None}
     
     except Exception as _:
         print(f"Error: worker={worker_id}, agent_a={agent_a}, agent_b={agent_b}\n{traceback.format_exc()}")
@@ -349,7 +345,9 @@ def tournament(results, boardsize, walls, games, pool):
     final_scores = [scores[i] / matches[i] if matches[i] > 0 else 0.0 for i in range(n)]
     return results[max(range(len(final_scores)), key=lambda k: final_scores[k])], final_scores
 
-def update_global_best(new_agent_a, new_agent_b, boardsize, walls, games):
+def update_global_best(new_agent_a, new_agent_b, boardsize, walls, games,
+                       benchmark_sigma=True, benchmark_random=True, benchmark_greedy=True,
+                       games_sigma=None, games_random=None, games_greedy=None):
     BEST_DIR.mkdir(parents=True, exist_ok=True)
     new_agent_a_name = new_agent_a.__class__.__name__
     new_agent_b_name = new_agent_b.__class__.__name__ if new_agent_b is not None else None
@@ -378,34 +376,61 @@ def update_global_best(new_agent_a, new_agent_b, boardsize, walls, games):
         replace_agent_a = winrate > 0.5
 
     if new_agent_b is None:
-        model = load_model(agent_b_path)
-        model.eval()
-        reference_agent = MCTSAgent(evaluator=NNEvaluator(model), num_simulations=REFERENCE_MODEL_NUM_SIMULATIONS, training=False)
+        score = None
+        score_vs_random = None
+        score_vs_greedy = None
 
-        result = evaluate(new_agent_a, reference_agent, boardsize, walls, games, eval_mode=True)
-        score = (result["A"] + 0.5 * result["draw"]) / (result["A"] + result["B"] + result["draw"])
+        if benchmark_sigma:
+            model = load_model(agent_b_path)
+            model.eval()
+            reference_agent = MCTSAgent(evaluator=NNEvaluator(model), num_simulations=REFERENCE_MODEL_NUM_SIMULATIONS, training=False)
+            result = evaluate(new_agent_a, reference_agent, boardsize, walls, games_sigma if games_sigma is not None else games, eval_mode=True)
+            score = (result["A"] + 0.5 * result["draw"]) / (result["A"] + result["B"] + result["draw"])
+
+        if benchmark_random:
+            result_random = evaluate(new_agent_a, RandomAgent(), boardsize, walls, games_random if games_random is not None else games)
+            score_vs_random = (result_random["A"] + 0.5 * result_random["draw"]) / (result_random["A"] + result_random["B"] + result_random["draw"])
+
+        if benchmark_greedy:
+            result_greedy = evaluate(new_agent_a, GreedyDistanceAgent(), boardsize, walls, games_greedy if games_greedy is not None else games)
+            score_vs_greedy = (result_greedy["A"] + 0.5 * result_greedy["draw"]) / (result_greedy["A"] + result_greedy["B"] + result_greedy["draw"])
 
         if Path(REFERENCE_MODEL_SCORES_PATH).exists():
             df = pd.read_csv(REFERENCE_MODEL_SCORES_PATH)
         else:
-            df = pd.DataFrame(columns=["model", "score"])
+            df = pd.DataFrame(columns=["model", "score_vs_sigma", "score_vs_random", "score_vs_greedy"])
         row = df[df["model"] == new_agent_a_name]
-        current_best_score = -np.inf if row.empty else np.float64(row.iloc[0]["score"])
+        current_best_score = -np.inf if (row.empty or "score_vs_greedy" not in row.columns or pd.isna(row.iloc[0]["score_vs_greedy"])) else np.float64(row.iloc[0]["score_vs_greedy"])
 
-        print(f"\n[Reference agent] {new_agent_a_name} vs reference agent score: {score:.4f}")
+        if score is not None:
+            print(f"\n[Sigma ref]   {new_agent_a_name} vs reference agent:     {score:.4f}")
+        if score_vs_random is not None:
+            print(f"[Random]      {new_agent_a_name} vs random agent:          {score_vs_random:.4f}")
+        if score_vs_greedy is not None:
+            print(f"[Greedy dist] {new_agent_a_name} vs greedy-distance agent: {score_vs_greedy:.4f}")
 
-        if score >= current_best_score:
+        # Gate on greedy score; if greedy was not run, always save
+        gate_score = score_vs_greedy if score_vs_greedy is not None else np.inf
+
+        if gate_score >= current_best_score:
             new_agent_a.save(agent_a_path)
 
+            new_row = {"model": new_agent_a_name}
+            if score is not None:           new_row["score_vs_sigma"]  = score
+            if score_vs_random is not None: new_row["score_vs_random"] = score_vs_random
+            if score_vs_greedy is not None: new_row["score_vs_greedy"] = score_vs_greedy
+
             if row.empty:
-                df = pd.concat([df, pd.DataFrame([{"model": new_agent_a_name, "score": score}])], ignore_index=True)
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             else:
-                df.loc[df["model"] == new_agent_a_name, "score"] = score
+                for col, val in new_row.items():
+                    if col != "model":
+                        df.loc[df["model"] == new_agent_a_name, col] = val
             df.to_csv(REFERENCE_MODEL_SCORES_PATH, index=False)
 
-            print(f"[Reference agent] Updated best model against reference agent: {agent_a_path}")
+            print(f"[Greedy dist] Updated best model: {agent_a_path}")
         else:
-            print("[Reference agent] Keeping previous best against reference agent.")
+            print("[Greedy dist] Keeping previous best.")
 
         return
 
@@ -439,8 +464,10 @@ def update_global_best(new_agent_a, new_agent_b, boardsize, walls, games):
         print("[AgentB] Keeping previous best.")
 
 
-def train_population(agent_a=None, agent_b=None, epochs=5000, boardsize=BOARDSIZE, walls=WALLS, processes=PROCESSES, checkpoint_every=20000, tournament_games=100, 
-                     run_name=None, compare_with_reference_model=False):
+def train_population(agent_a=None, agent_b=None, epochs=5000, boardsize=BOARDSIZE, walls=WALLS, processes=PROCESSES, checkpoint_every=20000, tournament_games=100,
+                     run_name=None, compare_with_reference_model=False,
+                     benchmark_sigma=True, benchmark_random=True, benchmark_greedy=True,
+                     games_sigma=None, games_random=None, games_greedy=None):
     if agent_a is None:
         agent_a = QLearningAgent()
     if agent_b is None:
@@ -450,7 +477,7 @@ def train_population(agent_a=None, agent_b=None, epochs=5000, boardsize=BOARDSIZ
     run_dir = make_run_dir(agent_a, agent_b, run_name=run_name)
     print(f"Run dir: {run_dir}")
 
-    worker_args = [(worker_id, run_dir, copy.deepcopy(agent_a), copy.deepcopy(agent_b), epochs, boardsize, walls, checkpoint_every, epochs // 50)
+    worker_args = [(worker_id, run_dir, copy.deepcopy(agent_a), copy.deepcopy(agent_b), epochs, boardsize, walls, checkpoint_every)
                    for worker_id in range(processes)]
 
     # shared_results = Manager().list([None for _ in range(processes)])
@@ -469,6 +496,10 @@ def train_population(agent_a=None, agent_b=None, epochs=5000, boardsize=BOARDSIZ
     results = [r for r in results_raw if r is not None]
     print(f"Completed: {len(results)}/{len(results_raw)} tasks in training")
 
+    if not results:
+        print("All workers failed — skipping tournament and model update.")
+        return agent_a, agent_b
+
     print("\nRunning tournament...")
     with ThreadPool(processes=processes, initializer=init_pool_worker, initargs=(results,)) as pool:
         best_result, scores = tournament(results, boardsize, walls, tournament_games, pool=pool)
@@ -482,7 +513,9 @@ def train_population(agent_a=None, agent_b=None, epochs=5000, boardsize=BOARDSIZ
         print(f"\tagent_b: W={r2['A']} | L={r2['B']} | D={r2['draw']} | score={(r2['A'] + 0.5 * r2['draw']) / (r2['A'] + r2['B'] + r2['draw']):.4f}")
 
     print(f"\nBEST WORKER: {best_result['worker_id']}")
-    update_global_best(best_result["agent_a"], None if compare_with_reference_model else best_result["agent_b"], boardsize, walls, games=10)
+    update_global_best(best_result["agent_a"], None if compare_with_reference_model else best_result["agent_b"], boardsize, walls, games=10,
+                       benchmark_sigma=benchmark_sigma, benchmark_random=benchmark_random, benchmark_greedy=benchmark_greedy,
+                       games_sigma=games_sigma, games_random=games_random, games_greedy=games_greedy)
 
     return best_result["agent_a"], best_result["agent_b"]
 
@@ -498,4 +531,5 @@ if __name__ == "__main__":
         print(f"\n{'='*60}")
         print(f"CYCLE {cycle}/{NUM_CYCLES}")
         print(f"{'='*60}")
-        a1, a2 = train_population(a1, a2, epochs=EPOCHS_PER_CYCLE, compare_with_reference_model=True)
+        a1, a2 = train_population(a1, a2, epochs=EPOCHS_PER_CYCLE, compare_with_reference_model=True, benchmark_sigma=False,
+                                   games_random=400, games_greedy=10)

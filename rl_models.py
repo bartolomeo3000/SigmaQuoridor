@@ -6,11 +6,11 @@ import numpy as np
 
 from game import action_to_index, action_space_size, PawnAction, WallAction
 
-BOARDSIZE = 7
+BOARDSIZE = 3
 
 seed = 0
 dtype = np.float16
-dtype_int = np.uint16
+dtype_int = np.uint32
 #wall_bits = 3
 
 class BaseAgent(ABC):
@@ -176,6 +176,7 @@ class BaseAgent(ABC):
 
         reflected._recompute_dists()
         reflected._legal_actions_cache = None
+        reflected.position_history = {}  # synthetic augmentation — no repetition history
         return reflected
 
     def _reflect_action(self, action):
@@ -256,6 +257,8 @@ class TDZeroLearningBaseAgent(BaseAgent):
     def _policy_probs(self, state):
         legal_actions, indices = self._legal_action_indices(state)
         n = len(indices)
+        if n == 0:
+            return legal_actions, indices, np.empty(0, dtype=dtype)
         probs = np.full(n, self.epsilon / n, dtype=dtype)
 
         q = self._q_values(self._state_to_key(state), self.Q)
@@ -287,6 +290,11 @@ class TDZeroLearningBaseAgent(BaseAgent):
         policy = list(zip(legal_actions, probs))
         policy.sort(key=lambda x: x[1], reverse=True)
         return policy
+
+    def _get_qvals_for_indices(self, state, indices):
+        """Return raw Q-values for the given action indices (used by SimpleRLAgentWrapper)."""
+        q = self._q_values(self._state_to_key(state), self.Q)
+        return [float(q.get(int(i), 0.0)) for i in indices]
 
     def _update_single(self, state, action, reward, next_state, is_terminal_state):
         s = self._state_to_key(state)
@@ -346,6 +354,60 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
         self.QA = {}
         self.QB = {}
 
+    @staticmethod
+    def _serialize_table(table):
+        keys = list(table.keys())
+        indices = [np.fromiter(v.keys(), dtype=dtype_int) if len(v) > 0 else np.empty(0, dtype=dtype_int) for v in table.values()]
+        values  = [np.fromiter(v.values(), dtype=dtype)     if len(v) > 0 else np.empty(0, dtype=dtype)     for v in table.values()]
+        return keys, indices, values
+
+    @staticmethod
+    def _deserialize_table(keys, indices, values):
+        return {int(s): {int(i): dtype(v) for i, v in zip(idxs, vals)}
+                for s, idxs, vals in zip(keys, indices, values)}
+
+    def save(self, path, compress=False):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        qa_keys, qa_indices, qa_values = self._serialize_table(self.QA)
+        qb_keys, qb_indices, qb_values = self._serialize_table(self.QB)
+        vc_keys, vc_indices, vc_values = (
+            list(self.visit_counts_dict.keys()),
+            [np.fromiter(v.keys(), dtype=dtype_int) if len(v) > 0 else np.empty(0, dtype=dtype_int) for v in self.visit_counts_dict.values()],
+            [np.fromiter(v.values(), dtype=dtype_int) if len(v) > 0 else np.empty(0, dtype=dtype_int) for v in self.visit_counts_dict.values()],
+        )
+        data = {
+            "boardsize": self.boardsize, "gamma": self.gamma, "alpha": self.alpha, "alpha0": self.alpha0,
+            "alpha_beta": self.alpha_beta, "min_alpha": self.min_alpha, "epsilon": self.epsilon,
+            "min_epsilon": self.min_epsilon, "epsilon_decay": self.epsilon_decay,
+            "step_count": self.step_count, "reset_period": self.reset_period, "ucb_c": self.ucb_c, "eps": self.eps,
+            "qa_keys": qa_keys, "qa_indices": qa_indices, "qa_values": qa_values,
+            "qb_keys": qb_keys, "qb_indices": qb_indices, "qb_values": qb_values,
+            "vc_keys": vc_keys, "vc_indices": vc_indices, "vc_values": vc_values,
+        }
+        joblib.dump(data, path, compress=('gzip', 3)) if compress else joblib.dump(data, path)
+
+    def load(self, path):
+        data = joblib.load(path)
+        self.boardsize    = data["boardsize"]
+        self.gamma        = data["gamma"]
+        self.alpha        = data["alpha"]
+        self.alpha0       = data["alpha0"]
+        self.alpha_beta   = data["alpha_beta"]
+        self.min_alpha    = data["min_alpha"]
+        self.epsilon      = data["epsilon"]
+        self.min_epsilon  = data["min_epsilon"]
+        self.epsilon_decay = data["epsilon_decay"]
+        self.step_count   = data["step_count"]
+        self.reset_period = data["reset_period"]
+        self.ucb_c        = data["ucb_c"]
+        self.eps          = data["eps"]
+        self.QA = self._deserialize_table(data["qa_keys"], data["qa_indices"], data["qa_values"])
+        self.QB = self._deserialize_table(data["qb_keys"], data["qb_indices"], data["qb_values"])
+        self.Q  = {}  # unused for double agents
+        self.visit_counts_dict = {int(s): {int(i): dtype_int(v) for i, v in zip(idxs, vals)}
+                                  for s, idxs, vals in zip(data["vc_keys"], data["vc_indices"], data["vc_values"])}
+        return self
+
     def select_action(self, state, training=True):
         legal_actions, indices = self._legal_action_indices(state)
         s = self._state_to_key(state)
@@ -375,9 +437,18 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
         policy.sort(key=lambda x: x[1], reverse=True)
         return policy
 
+    def _get_qvals_for_indices(self, state, indices):
+        """Return combined QA+QB values for the given action indices."""
+        s = self._state_to_key(state)
+        qa = self._q_values(s, self.QA)
+        qb = self._q_values(s, self.QB)
+        return [float(qa.get(int(i), 0.0) + qb.get(int(i), 0.0)) for i in indices]
+
     def _policy_probs(self, state):
         legal_actions, indices = self._legal_action_indices(state)
         n = len(indices)
+        if n == 0:
+            return legal_actions, indices, np.empty(0, dtype=dtype)
         probs = np.full(n, self.epsilon / n, dtype=dtype)
 
         s = self._state_to_key(state)
@@ -417,6 +488,8 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
 class DoubleQLearningAgent(DoubleTDZeroLearningBaseAgent):
     def _double_update_policy(self, next_state, ns, update_a):
         indices = self._legal_action_indices(next_state)[1]
+        if len(indices) == 0:
+            return 0.0
         qa = self._q_values(ns, self.QA)
         qb = self._q_values(ns, self.QB)
         qa_vals = np.array([qa.get(int(i), 0.0) for i in indices], dtype=dtype)
@@ -428,12 +501,47 @@ class DoubleQLearningAgent(DoubleTDZeroLearningBaseAgent):
 class DoubleSarsaAgent(DoubleTDZeroLearningBaseAgent):
     def _double_update_policy(self, next_state, ns, update_a):
         actions, _, probs = self._policy_probs(next_state)
+        if len(actions) == 0:
+            return 0.0
         return self._q_values(ns, self.QB if update_a else self.QA).get(self._action_to_index_cached(actions[self.rng.choice(len(actions), p=probs)]), 0.0)
 
 
 class DoubleExpectedSarsaAgent(DoubleTDZeroLearningBaseAgent):
     def _double_update_policy(self, next_state, ns, update_a):
         _, indices, probs = self._policy_probs(next_state)
+        if len(indices) == 0:
+            return 0.0
         q = self._q_values(ns, self.QB if update_a else self.QA)
         return np.dot(probs, np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype))
-    
+
+
+class SimpleRLAgentWrapper:
+    """Adapts a BaseAgent subclass to the app's agent interface.
+
+    Provides the same duck-type interface as MCTSAgent expected by the
+    Flask app:
+      - select_action(state)            — greedy (training=False) play
+      - evaluator(state, legal_actions) — Q-value softmax priors + 0 value
+      - num_simulations                 — None (not applicable)
+    """
+
+    num_simulations = None  # not applicable; present for interface compatibility
+
+    def __init__(self, rl_agent: BaseAgent):
+        self._rl = rl_agent
+
+        def _evaluator(state, legal_actions):
+            indices = [rl_agent._action_to_index_cached(a) for a in legal_actions]
+            qvals = np.array(rl_agent._get_qvals_for_indices(state, indices), dtype=float)
+            qvals -= qvals.max()  # numerical stability
+            exp_q = np.exp(qvals)
+            priors = (exp_q / exp_q.sum()).tolist()
+            return priors, 0.0
+
+        self.evaluator = _evaluator
+
+    def select_action(self, state):
+        return self._rl.select_action(state, training=False)
+
+    def get_policy(self, state):
+        return self._rl.get_policy(state)
