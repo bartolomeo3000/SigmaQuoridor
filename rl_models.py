@@ -41,7 +41,7 @@ class BaseAgent(ABC):
 
         data = {"boardsize": self.boardsize, "gamma": self.gamma, "alpha": self.alpha, "alpha0": self.alpha0, "alpha_beta": self.alpha_beta, "min_alpha": self.min_alpha,
                 "epsilon": self.epsilon, "min_epsilon": self.min_epsilon, "epsilon_decay": self.epsilon_decay, "step_count": self.step_count, "reset_period": self.reset_period, "ucb_c": self.ucb_c,
-                "eps": self.eps, "q_keys": q_keys, "q_indices": q_indices, "q_values": q_values, "vc_keys": vc_keys, "vc_indices": vc_indices, "vc_values": vc_values}
+                "eps": self.eps, "optimistic_init": self.optimistic_init, "q_keys": q_keys, "q_indices": q_indices, "q_values": q_values, "vc_keys": vc_keys, "vc_indices": vc_indices, "vc_values": vc_values}
 
         joblib.dump(data, path, compress=('gzip', 3)) if compress else joblib.dump(data, path)
 
@@ -68,6 +68,7 @@ class BaseAgent(ABC):
         self.reset_period = data["reset_period"]
         self.ucb_c = data["ucb_c"]
         self.eps = data["eps"]
+        self.optimistic_init = data.get("optimistic_init", 0.0)  # backward compat
 
         self.Q = {}
         for s, idxs, vals in zip(data["q_keys"], data["q_indices"], data["q_values"]):
@@ -205,7 +206,7 @@ class BaseAgent(ABC):
 class TDZeroLearningBaseAgent(BaseAgent):
 
     def __init__(self, boardsize=BOARDSIZE, gamma=0.995, alpha=0.8, alpha_beta_coef=0.6, min_alpha=0.01, epsilon=0.25, min_epsilon=0.01, epsilon_decay=0.99999, ucb_coef=None,
-                 cyclical_step_count=0, cyclical_reset_period=20000, seed=seed, eps=1e-8):
+                 cyclical_reset_period=20000, optimistic_init=0.0, seed=seed, eps=1e-8):
 
         super().__init__(boardsize, seed)
 
@@ -221,9 +222,10 @@ class TDZeroLearningBaseAgent(BaseAgent):
         self.min_epsilon = min_epsilon
         self.epsilon_decay = epsilon_decay
 
-        self.step_count = cyclical_step_count
+        self.step_count = 0
         self.reset_period = cyclical_reset_period
-        self.ucb_c = self.ucb_c = 1.4 * (1.0 / (1.0 + 0.000002 * self.step_count)) if ucb_coef is None else ucb_coef
+        self.ucb_c = 2.0 if ucb_coef is None else ucb_coef
+        self.optimistic_init = optimistic_init
 
         self.Q = {}
         self.visit_counts_dict = {}
@@ -262,7 +264,7 @@ class TDZeroLearningBaseAgent(BaseAgent):
         probs = np.full(n, self.epsilon / n, dtype=dtype)
 
         q = self._q_values(self._state_to_key(state), self.Q)
-        probs[np.argmax(np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype))] += 1.0 - self.epsilon
+        probs[np.argmax(np.array([q.get(int(i), self.optimistic_init) for i in indices], dtype=dtype))] += 1.0 - self.epsilon
 
         return legal_actions, indices, probs
     
@@ -276,7 +278,7 @@ class TDZeroLearningBaseAgent(BaseAgent):
         visit_counts = self._visit_counts(s)
         q = self._q_values(s, self.Q)
         counts = np.array([visit_counts.get(int(i), 0) for i in indices], dtype=dtype_int)
-        scores = np.nan_to_num(np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype) + self.ucb_c * np.sqrt(np.log((counts.sum() + 1) + 1) / (counts + 1)), self.eps)
+        scores = np.nan_to_num(np.array([q.get(int(i), self.optimistic_init) for i in indices], dtype=dtype) + self.ucb_c * np.sqrt(np.log((counts.sum() + 1) + 1) / (counts + 1)), self.eps)
 
         max_idxs = np.flatnonzero(scores == scores.max())
         return legal_actions[max_idxs[self.rng.integers(len(max_idxs))]]
@@ -284,7 +286,7 @@ class TDZeroLearningBaseAgent(BaseAgent):
     def get_policy(self, state) -> list:
         legal_actions, indices = self._legal_action_indices(state)
         q = self._q_values(self._state_to_key(state), self.Q)
-        qvals = np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype)
+        qvals = np.array([q.get(int(i), self.optimistic_init) for i in indices], dtype=dtype)
         best = int(np.argmax(qvals))
         probs = [1.0 if i == best else 0.0 for i in range(len(legal_actions))]
         policy = list(zip(legal_actions, probs))
@@ -294,7 +296,7 @@ class TDZeroLearningBaseAgent(BaseAgent):
     def _get_qvals_for_indices(self, state, indices):
         """Return raw Q-values for the given action indices (used by SimpleRLAgentWrapper)."""
         q = self._q_values(self._state_to_key(state), self.Q)
-        return [float(q.get(int(i), 0.0)) for i in indices]
+        return [float(q.get(int(i), self.optimistic_init)) for i in indices]
 
     def _update_single(self, state, action, reward, next_state, is_terminal_state):
         s = self._state_to_key(state)
@@ -333,7 +335,7 @@ class QLearningAgent(TDZeroLearningBaseAgent):
     def _update_policy(self, next_state, ns):
         indices = self._legal_action_indices(next_state)[1]
         q = self._q_values(ns, self.Q)
-        return max((q.get(int(i), 0.0) for i in indices), default=0.0)
+        return max((q.get(int(i), self.optimistic_init) for i in indices), default=self.optimistic_init)
     
 class SarsaAgent(TDZeroLearningBaseAgent):
     def _update_policy(self, next_state, ns):
@@ -344,7 +346,7 @@ class ExpectedSarsaAgent(TDZeroLearningBaseAgent):
     def _update_policy(self, next_state, ns):
         _, indices, probs = self._policy_probs(next_state)
         q = self._q_values(ns, self.Q)
-        return np.dot(probs, np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype))
+        return np.dot(probs, np.array([q.get(int(i), self.optimistic_init) for i in indices], dtype=dtype))
     
 
 class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
@@ -379,7 +381,7 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
             "boardsize": self.boardsize, "gamma": self.gamma, "alpha": self.alpha, "alpha0": self.alpha0,
             "alpha_beta": self.alpha_beta, "min_alpha": self.min_alpha, "epsilon": self.epsilon,
             "min_epsilon": self.min_epsilon, "epsilon_decay": self.epsilon_decay,
-            "step_count": self.step_count, "reset_period": self.reset_period, "ucb_c": self.ucb_c, "eps": self.eps,
+        "step_count": self.step_count, "reset_period": self.reset_period, "ucb_c": self.ucb_c, "eps": self.eps, "optimistic_init": self.optimistic_init,
             "qa_keys": qa_keys, "qa_indices": qa_indices, "qa_values": qa_values,
             "qb_keys": qb_keys, "qb_indices": qb_indices, "qb_values": qb_values,
             "vc_keys": vc_keys, "vc_indices": vc_indices, "vc_values": vc_values,
@@ -401,6 +403,7 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
         self.reset_period = data["reset_period"]
         self.ucb_c        = data["ucb_c"]
         self.eps          = data["eps"]
+        self.optimistic_init = data.get("optimistic_init", 0.0)  # backward compat
         self.QA = self._deserialize_table(data["qa_keys"], data["qa_indices"], data["qa_values"])
         self.QB = self._deserialize_table(data["qb_keys"], data["qb_indices"], data["qb_values"])
         self.Q  = {}  # unused for double agents
@@ -420,7 +423,7 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
 
         visit_counts = self._visit_counts(s)
         counts = np.array([visit_counts.get(int(i), 0) for i in indices], dtype=dtype_int)
-        scores = np.nan_to_num(np.array([qa.get(int(i), 0.0) + qb.get(int(i), 0.0) for i in indices], dtype=dtype) +
+        scores = np.nan_to_num(np.array([qa.get(int(i), self.optimistic_init / 2) + qb.get(int(i), self.optimistic_init / 2) for i in indices], dtype=dtype) +
                                self.ucb_c * np.sqrt(np.log((counts.sum() + 1) + 1) / (counts + 1)), self.eps)
         max_idxs = np.flatnonzero(scores == scores.max())
         return legal_actions[max_idxs[self.rng.integers(len(max_idxs))]]
@@ -430,7 +433,7 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
         s = self._state_to_key(state)
         qa = self._q_values(s, self.QA)
         qb = self._q_values(s, self.QB)
-        qvals = np.array([qa.get(int(i), 0.0) + qb.get(int(i), 0.0) for i in indices], dtype=dtype)
+        qvals = np.array([qa.get(int(i), self.optimistic_init / 2) + qb.get(int(i), self.optimistic_init / 2) for i in indices], dtype=dtype)
         best = int(np.argmax(qvals))
         probs = [1.0 if i == best else 0.0 for i in range(len(legal_actions))]
         policy = list(zip(legal_actions, probs))
@@ -442,7 +445,7 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
         s = self._state_to_key(state)
         qa = self._q_values(s, self.QA)
         qb = self._q_values(s, self.QB)
-        return [float(qa.get(int(i), 0.0) + qb.get(int(i), 0.0)) for i in indices]
+        return [float(qa.get(int(i), self.optimistic_init / 2) + qb.get(int(i), self.optimistic_init / 2)) for i in indices]
 
     def _policy_probs(self, state):
         legal_actions, indices = self._legal_action_indices(state)
@@ -455,7 +458,7 @@ class DoubleTDZeroLearningBaseAgent(TDZeroLearningBaseAgent):
         qa = self._q_values(s, self.QA)
         qb = self._q_values(s, self.QB)
 
-        probs[np.argmax(np.array([qa.get(int(i), 0.0) + qb.get(int(i), 0.0) for i in indices], dtype=dtype))] += 1.0 - self.epsilon
+        probs[np.argmax(np.array([qa.get(int(i), self.optimistic_init / 2) + qb.get(int(i), self.optimistic_init / 2) for i in indices], dtype=dtype))] += 1.0 - self.epsilon
 
         return legal_actions, indices, probs
 
@@ -492,8 +495,8 @@ class DoubleQLearningAgent(DoubleTDZeroLearningBaseAgent):
             return 0.0
         qa = self._q_values(ns, self.QA)
         qb = self._q_values(ns, self.QB)
-        qa_vals = np.array([qa.get(int(i), 0.0) for i in indices], dtype=dtype)
-        qb_vals = np.array([qb.get(int(i), 0.0) for i in indices], dtype=dtype)
+        qa_vals = np.array([qa.get(int(i), self.optimistic_init / 2) for i in indices], dtype=dtype)
+        qb_vals = np.array([qb.get(int(i), self.optimistic_init / 2) for i in indices], dtype=dtype)
 
         return qb_vals[np.argmax(qa_vals)] if update_a else qa_vals[np.argmax(qb_vals)]
 
@@ -512,7 +515,7 @@ class DoubleExpectedSarsaAgent(DoubleTDZeroLearningBaseAgent):
         if len(indices) == 0:
             return 0.0
         q = self._q_values(ns, self.QB if update_a else self.QA)
-        return np.dot(probs, np.array([q.get(int(i), 0.0) for i in indices], dtype=dtype))
+        return np.dot(probs, np.array([q.get(int(i), self.optimistic_init / 2) for i in indices], dtype=dtype))
 
 
 class SimpleRLAgentWrapper:
