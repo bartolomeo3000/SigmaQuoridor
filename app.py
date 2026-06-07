@@ -29,7 +29,7 @@ from flask import Flask, jsonify, request, send_from_directory
 # Change these two lines when switching to a different board variant.
 DEFAULT_BOARDSIZE    = 7
 DEFAULT_WALLS        = 5
-MODEL_DIR            = "models_9x9" if DEFAULT_BOARDSIZE == 9 else "models_7x7"
+MODEL_DIR            = "models_9x9" if DEFAULT_BOARDSIZE == 9 else "models_7x7_v2"
 import re
 from game import State, PawnAction, WallAction
 from mcts import MCTSAgent
@@ -39,7 +39,7 @@ from rl_models import (
     DoubleQLearningAgent, DoubleSarsaAgent, DoubleExpectedSarsaAgent,
     SimpleRLAgentWrapper,
 )
-from benchmark_agents import RandomAgent, GreedyDistanceAgent
+from benchmark_agents import RandomAgent, GreedyDistanceAgent, MinimaxAgent
 
 CPU_DEVICE = torch.device("cpu")
 
@@ -105,6 +105,18 @@ _AGENT_REGISTRY: dict[str, dict] = {
             evaluator=make_nn_evaluator(str(Path("models_7x7", "supervised.pt")), device=CPU_DEVICE),
             num_simulations=n,
         ),
+    },
+    "minimax_d2": {
+        "name": "Minimax (depth 2)",
+        "description": "Alpha-beta minimax search to depth 2, ordered by distance heuristic",
+        "available": _always,
+        "factory": lambda _n: MinimaxAgent(depth=2),
+    },
+    "minimax_d3": {
+        "name": "Minimax (depth 3)",
+        "description": "Alpha-beta minimax search to depth 3, ordered by distance heuristic",
+        "available": _always,
+        "factory": lambda _n: MinimaxAgent(depth=3),
     },
     "greedy_distance": {
         "name": "Greedy Distance",
@@ -450,7 +462,6 @@ def post_mcts_analysis():
         num_simulations    = num_sims,
         training           = False,
         temperature        = 1.0,
-        dist_bonus_weight  = 3.0,
         sim_batch_size     = 1,
     )
     policy = analysis_agent.get_policy(_state)

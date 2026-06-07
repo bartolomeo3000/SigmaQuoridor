@@ -36,6 +36,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import csv
 import multiprocessing
 import os
 import random
@@ -51,6 +52,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
 
+from benchmark_agents import GreedyDistanceAgent, MinimaxAgent, RandomAgent
 from dual_network import DEVICE, DualNetwork, NNEvaluator, load_model, save_model
 from game import State, WallAction, action_space_size, action_to_index, flip_nn_input_lr, flip_policy_lr
 from mcts import MCTSAgent
@@ -59,20 +61,20 @@ from mcts import MCTSAgent
 # Override any of these via CLI flags (see parse_args()).
 
 # Board
-BOARDSIZE        = 9
-WALLS_PER_PLAYER = 10
+BOARDSIZE        = 7
+WALLS_PER_PLAYER = 5
 
 # Self-play
-GAMES_PER_CYCLE   = 100     # self-play games played per cycle
+GAMES_PER_CYCLE   = 200     # self-play games played per cycle
 MCTS_SIMS         = 800   # MCTS simulations per move during self-play
 NUM_WORKERS       = os.cpu_count() or 1  # parallel self-play processes
 C_PUCT            = 1.0
 DIRICHLET_ALPHA   = 0.3
-DIRICHLET_EPSILON = 0.30
-DIST_BONUS_WEIGHT_MAX = 2.0  # each game samples w1, w2 ~ Uniform[0, MAX] independently per side
-FPU_REDUCTION     = 0.2    # First Play Urgency: unvisited child Q estimate = parent_Q - FPU
-TEMP_THRESHOLD    = 20     # plies ≤ this use τ=1.0 (exploration); > uses τ=0.0
-FAST_PLAY_PROB      = 0.3  # fraction of moves that use fast MCTS; remainder use full search
+DIRICHLET_EPSILON = 0.25
+DIST_BONUS_WEIGHT_MAX = 0.5  # each game samples w1, w2 ~ Uniform[0, MAX] independently per side
+FPU_REDUCTION     = 0.1    # First Play Urgency: unvisited child Q estimate = parent_Q - FPU
+TEMP_THRESHOLD    = 14     # plies ≤ this use τ=1.0 (exploration); > uses τ=0.0
+FAST_PLAY_PROB      = 0.0  # fraction of moves that use fast MCTS; remainder use full search
 MCTS_SIMS_FAST      = 128   # simulations for fast plies (2 NN batches); not saved unless surprising
 FAST_KL_THRESHOLD   = 0.7   # KL(visit_dist ∥ prior) nats — fast positions above this are saved
 MCTS_SIM_BATCH_SIZE = 1     # legacy sequential mode: one simulation/eval at a time
@@ -81,34 +83,62 @@ MCTS_SIM_BATCH_SIZE = 1     # legacy sequential mode: one simulation/eval at a t
 # MCTS self-play begins, leaving them with 0 walls for actual play.
 # Applied to RANDOM_WALL_FRACTION of games; the other (1 - RANDOM_WALL_FRACTION) start normally with WALLS_PER_PLAYER.
 # Set to 0 to disable entirely.
-RANDOM_WALL_PLIES = 10      # walls placed per player in pre-filled games
-RANDOM_WALL_FRACTION = 0.0  # fraction of games to apply random wall pre-fill to
+RANDOM_WALL_PLIES = 1      # walls placed per player in pre-filled games
+RANDOM_WALL_FRACTION = 0.05  # fraction of games to apply random wall pre-fill to
 
 # Replay buffer
 BUFFER_CYCLES = 40         # keep positions from this many recent cycles
 
 # Training
 BATCH_SIZE                 = 256
-TRAIN_POSITIONS_PER_CYCLE  = 100_000  # gradient updates = this // BATCH_SIZE per cycle
-BUFFER_RECENCY_DECAY       = 0.90     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
+TRAIN_POSITIONS_PER_CYCLE  = 512_000  # gradient updates = this // BATCH_SIZE per cycle
+BUFFER_RECENCY_DECAY       = 0.96     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
 MIN_BUFFER_SIZE            = BATCH_SIZE
 
 # Optimizer
-LEARNING_RATE     = 1e-3
+LEARNING_RATE     = 1e-4
 WEIGHT_DECAY      = 1e-4
-VALUE_LOSS_WEIGHT = 1.5         # multiply value MSE loss (KataGo uses ~1.5)
+VALUE_LOSS_WEIGHT = 1.0         # multiply value MSE loss (KataGo uses ~1.5)
 LR_MILESTONES  = [800, 1600]    # cycle numbers at which to multiply LR by LR_DECAY
 LR_DECAY       = 0.1
 
 # Network
-FILTERS      = 128
-NUM_RESIDUAL = 10
+FILTERS      = 64
+NUM_RESIDUAL = 6
+
+# Evaluation
+EVAL_EVERY = 5    # run evaluation every N cycles; 0 = never
+EVAL_SIMS  = 800   # MCTS simulations for the challenger during evaluation
+
+# Holdout validation (fixed set sampled once from a previous run's data)
+HOLDOUT_DIR    = "data_7x7"   # source directory for holdout positions
+HOLDOUT_CYCLES = 10            # how many most-recent cycles to draw from
+HOLDOUT_SIZE   = 4096*100         # positions to evaluate per cycle (fixed sample)
+
+# Each entry: (label, num_games, spec)
+# spec: {"type": "random"} | {"type": "greedy"} |
+#        {"type": "mcts", "path": str, "sims": int} |
+#        {"type": "minimax", "depth": int}
+# num_games is split: ceil(n/2) games as P1, floor(n/2) games as P2.
+EVAL_OPPONENTS: list[tuple[str, int, dict]] = [
+    ("random",          10, {"type": "random"}),
+    ("greedy",          2, {"type": "greedy"}),
+    ("old-best   1s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":   1}),
+    ("old-best  50s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":  50}),
+    ("old-best 100s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 100}),
+    ("old-best 200s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 200}),
+    ("old-best 400s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 400}),
+    ("old-best 800s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 800}),
+    ("minimax d2",       2, {"type": "minimax", "depth": 2}),
+    ("minimax d3",       2, {"type": "minimax", "depth": 3}),
+    # ("minimax d4",       2, {"type": "minimax", "depth": 4}),
+]
 
 # Paths
-MODEL_DIR      = "models_9x9"                               # model checkpoints and best.pt weights
+MODEL_DIR      = "models_7x7_v2"                            # model checkpoints and best.pt weights
 MODEL_PATH     = os.path.join(MODEL_DIR, "best.pt")         # inference weights only
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")     # full training state
-DATA_DIR       = "data_9x9"                                 # persisted self-play cycles
+DATA_DIR       = "data_7x7_v2"                              # persisted self-play cycles
 
 # Run
 NUM_CYCLES        = 100
@@ -333,7 +363,8 @@ def self_play_game(
             state   = state.next(actions[chosen])
 
     # Retroactively assign value targets; store original AND mirror each position.
-    winner    = state.winner()
+    winner       = state.winner()
+    walls_placed = 2 * state.walls_initial - state.walls_p1 - state.walls_p2
     positions = []
     for state_tensor, policy_vec, player in history:
         if winner == 0:
@@ -348,7 +379,7 @@ def self_play_game(
             value,
         ))
 
-    return positions, winner
+    return positions, winner, walls_placed
 
 
 # ── Symmetric evaluator ───────────────────────────────────────────────────────
@@ -528,18 +559,20 @@ def collect_cycle_data(
     ]
 
     all_positions: list[tuple] = []
-    outcomes  = {0: 0, 1: 0, 2: 0}
+    outcomes     = {0: 0, 1: 0, 2: 0}
     game_lengths: list[int] = []
+    walls_per_game: list[int] = []
 
     ctx = multiprocessing.get_context("spawn")
     with ctx.Pool(n_workers) as pool:
-        for g, (positions, winner) in enumerate(
+        for g, (positions, winner, walls_placed) in enumerate(
             pool.imap_unordered(_worker_play_game, task_args)
         ):
             all_positions.extend(positions)
             outcomes[winner] += 1
             plies = len(positions) // 2  # positions includes LR-flip augmentation (2× per ply)
             game_lengths.append(plies)
+            walls_per_game.append(walls_placed)
 
             end = "\n" if g == num_games - 1 else "\r"
             print(
@@ -553,14 +586,24 @@ def collect_cycle_data(
     policies = np.stack([p[1] for p in all_positions])   # (M, A)
     values   = np.array([p[2] for p in all_positions], dtype=np.float32)  # (M,)
 
+    # Policy entropy: H(π) = -Σ p·log(p) over legal actions (0-prob entries contribute 0)
+    # Replace 0s with 1.0 before log so numpy doesn't warn about log(0);
+    # those slots are multiplied by 0 in the entropy sum so the result is identical.
+    log_p        = np.log(np.where(policies > 0, policies, 1.0))
+    mean_entropy = float(-(policies * log_p).sum(axis=1).mean())
+
     stats = {
-        "n_positions": len(all_positions),
-        "mean_length": float(np.mean(game_lengths)),
-        "p1_wins":     outcomes[1],
-        "p2_wins":     outcomes[2],
-        "draws":       outcomes[0],
-        "value_mean":  float(values.mean()),
-        "value_std":   float(values.std()),
+        "n_positions":        len(all_positions),
+        "mean_length":        float(np.mean(game_lengths)),
+        "min_length":         int(np.min(game_lengths)),
+        "max_length":         int(np.max(game_lengths)),
+        "mean_walls_placed":  float(np.mean(walls_per_game)),
+        "mean_policy_entropy": mean_entropy,
+        "p1_wins":            outcomes[1],
+        "p2_wins":            outcomes[2],
+        "draws":              outcomes[0],
+        "value_mean":         float(values.mean()),
+        "value_std":          float(values.std()),
     }
     return states, policies, values, stats
 
@@ -608,7 +651,7 @@ def compute_loss(
     # ── Value loss ───────────────────────────────────────────────────────────
     loss_v = F.mse_loss(value.squeeze(1), target_z)
 
-    return loss_p + VALUE_LOSS_WEIGHT * loss_v, loss_p.detach(), loss_v.detach()
+    return loss_p + VALUE_LOSS_WEIGHT * loss_v, loss_p.detach(), loss_v.detach(), value.detach().squeeze(1)
 
 
 # ── Training phase ────────────────────────────────────────────────────────────
@@ -642,6 +685,8 @@ def run_training_phase(
     N = len(buf_states)
 
     total_sum = policy_sum = value_sum = 0.0
+    value_acc_sum   = 0.0
+    value_acc_count = 0
 
     for step in range(1, steps + 1):
         if weights is not None:
@@ -653,13 +698,20 @@ def run_training_phase(
         target_z  = torch.from_numpy(buf_values[idx]).to(device)
 
         optimizer.zero_grad()
-        loss, lp, lv = compute_loss(model, states, target_pi, target_z)
+        loss, lp, lv, val_pred = compute_loss(model, states, target_pi, target_z)
         loss.backward()
         optimizer.step()
 
         total_sum  += loss.item()
         policy_sum += lp.item()
         value_sum  += lv.item()
+
+        # Value accuracy: sign(predicted) == sign(target) for non-draw positions
+        non_draw = target_z != 0
+        if non_draw.any():
+            correct = (val_pred[non_draw].sign() == target_z[non_draw].sign()).float().mean().item()
+            value_acc_sum   += correct
+            value_acc_count += 1
 
         if log_every > 0 and step % log_every == 0:
             print(
@@ -670,9 +722,10 @@ def run_training_phase(
             )
 
     return {
-        "total":  total_sum  / steps,
-        "policy": policy_sum / steps,
-        "value":  value_sum  / steps,
+        "total":          total_sum  / steps,
+        "policy":         policy_sum / steps,
+        "value":          value_sum  / steps,
+        "value_accuracy": value_acc_sum / value_acc_count if value_acc_count else float("nan"),
     }
 
 
@@ -794,6 +847,319 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+# ── Training stats CSV ───────────────────────────────────────────────────────
+
+_STATS_COLUMNS = [
+    # Self-play results
+    "cycle",
+    "p1_wins", "p2_wins", "draws",
+    "mean_game_length", "min_game_length", "max_game_length",
+    "mean_walls_placed",
+    "mean_policy_entropy",
+    # Training
+    "value_accuracy",
+    "loss_total", "loss_policy", "loss_value",
+    "holdout_loss_total", "holdout_loss_policy", "holdout_loss_value",
+    # Hyperparameter snapshot (useful when constants are tweaked mid-training)
+    "lr",
+    "boardsize", "walls_per_player",
+    "games_per_cycle", "mcts_sims", "mcts_sims_fast",
+    "fast_play_prob", "fast_kl_threshold", "temp_threshold",
+    "c_puct", "dirichlet_alpha", "dirichlet_epsilon",
+    "dist_bonus_weight_max", "fpu_reduction",
+    "random_wall_plies", "random_wall_fraction",
+    "buffer_cycles",
+    "batch_size", "train_positions_per_cycle", "buffer_recency_decay",
+    "learning_rate", "weight_decay", "value_loss_weight",
+    "lr_milestones", "lr_decay",
+    "filters", "num_residual", "num_workers",
+]
+
+
+_EVAL_COLUMNS = [
+    "cycle", "opponent", "eval_sims",
+    "n_as_p1", "w_as_p1", "d_as_p1", "l_as_p1",
+    "n_as_p2", "w_as_p2", "d_as_p2", "l_as_p2",
+    "win_pct",
+]
+
+
+def _append_eval_csv(path: str, rows: list[dict]) -> None:
+    """Append eval result rows to eval_results.csv, writing the header if new."""
+    write_header = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_EVAL_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
+def _append_stats_csv(path: str, row: dict) -> None:
+    """Append one row to the training stats CSV, writing the header if new."""
+    write_header = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_STATS_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+# ── Evaluation ───────────────────────────────────────────────────────────────
+
+def _eval_game(agent1, agent2, boardsize: int, walls: int) -> int:
+    """Play one deterministic game; return 0 (draw), 1 (P1 win), 2 (P2 win)."""
+    state = State(boardsize=boardsize, walls_p1=walls, walls_p2=walls)
+    while not state.is_finished():
+        agent  = agent1 if state.is_player1_turn() else agent2
+        action = max(agent.get_policy(state), key=lambda x: x[1])[0]
+        state  = state.next(action)
+    return state.winner()
+
+
+def _eval_worker(args: tuple) -> int:
+    """
+    Top-level worker entry-point for parallel evaluation.
+
+    Rebuilds the challenger from a serialised CPU state-dict and constructs
+    the opponent from its spec (MCTS opponents are loaded from disk; all
+    others are stateless and constructed directly).  Returns the game result
+    (0 draw, 1 P1 win, 2 P2 win).
+    """
+    (
+        challenger_sd, eval_sims, c_puct,
+        opponent_spec,
+        boardsize, walls,
+        challenger_is_p1,
+        n_workers,
+    ) = args
+
+    # Limit threads so n_workers processes don't over-subscribe the CPU.
+    cpu_count = os.cpu_count() or 1
+    n_threads = max(1, cpu_count // n_workers)
+    torch.set_num_threads(n_threads)
+
+    device = torch.device("cpu")
+
+    # Build challenger (reconstruct architecture from weight shapes, same as load_model).
+    _filters, _res, _bs = (
+        challenger_sd["conv.weight"].shape[0],
+        sum(1 for k in challenger_sd if k.startswith("residuals.") and k.endswith(".conv1.weight")),
+        int(challenger_sd["value_fc1.weight"].shape[1] ** 0.5),
+    )
+    challenger_model = DualNetwork(boardsize=_bs, filters=_filters, num_residual=_res).to(device)
+    challenger_model.load_state_dict(challenger_sd)
+    challenger_model.eval()
+    challenger = MCTSAgent(
+        evaluator       = NNEvaluator(challenger_model, device=device),
+        num_simulations = eval_sims,
+        training        = False,
+        c_puct          = c_puct,
+    )
+
+    # Build opponent.
+    t = opponent_spec["type"]
+    if t == "random":
+        opponent = RandomAgent()
+    elif t == "greedy":
+        opponent = GreedyDistanceAgent()
+    elif t == "minimax":
+        opponent = MinimaxAgent(depth=opponent_spec["depth"])
+    else:  # mcts
+        opp_model = load_model(opponent_spec["path"], device=device)
+        opp_model.eval()
+        opponent = MCTSAgent(
+            evaluator       = NNEvaluator(opp_model, device=device),
+            num_simulations = opponent_spec["sims"],
+            training        = False,
+            c_puct          = c_puct,
+        )
+
+    if challenger_is_p1:
+        return _eval_game(challenger, opponent, boardsize, walls)
+    else:
+        return _eval_game(opponent, challenger, boardsize, walls)
+
+
+def run_evaluation(
+    model:     DualNetwork,
+    cycle:     int,
+    boardsize: int,
+    walls:     int,
+    eval_sims: int,
+    opponents: list[tuple[str, int, dict]],
+    csv_path:  str | None = None,
+) -> None:
+    """
+    Pit the current model (challenger at eval_sims MCTS sims) against each
+    opponent in parallel and print W/D/L/Win% results.
+
+    Each game is dispatched to a worker process via Pool.imap so all games
+    across all opponents run concurrently.  Results are printed as a table
+    once all games are done.  Missing MCTS model files cause that opponent
+    to be skipped.  Results are appended to ``csv_path`` if provided.
+    """
+    if not opponents:
+        return
+
+    model.eval()
+    # Serialise challenger weights to CPU (workers never see CUDA tensors).
+    challenger_sd = {k: v.cpu() for k, v in model.state_dict().items()}
+
+    # Check which MCTS opponent files actually exist.
+    available_mcts: set[str] = {
+        spec["path"]
+        for _, _, spec in opponents
+        if spec["type"] == "mcts" and Path(spec["path"]).exists()
+    }
+
+    # Build a flat ordered task list: one entry per game.
+    # Each entry is (label, spec, challenger_is_p1).
+    game_tasks: list[tuple[str, dict, bool]] = []
+    skipped: list[str] = []
+    for label, num_games, spec in opponents:
+        if spec["type"] == "mcts" and spec.get("path") not in available_mcts:
+            skipped.append(label)
+            continue
+        n_p1 = (num_games + 1) // 2
+        n_p2 = num_games // 2
+        for _ in range(n_p1):
+            game_tasks.append((label, spec, True))
+        for _ in range(n_p2):
+            game_tasks.append((label, spec, False))
+
+    n_tasks   = len(game_tasks)
+    n_workers = max(1, min(NUM_WORKERS, n_tasks))
+
+    worker_args = [
+        (challenger_sd, eval_sims, C_PUCT, spec, boardsize, walls, is_p1, n_workers)
+        for _, spec, is_p1 in game_tasks
+    ]
+
+    # Per-label result accumulators.
+    counters: dict[str, list[int]] = {
+        label: [0, 0, 0, 0, 0, 0, 0, 0]   # n_p1 w1 d1 l1  n_p2 w2 d2 l2
+        for label, _, _ in opponents
+        if label not in skipped
+    }
+
+    col = max(len(lbl) for lbl, _, _ in opponents) + 2
+    sep = "─" * (col + 52)
+    print(f"\n  Evaluation — cycle {cycle}  (challenger: {eval_sims} sims, {n_tasks} games, {n_workers} workers)")
+    for lbl in skipped:
+        print(f"  {lbl:<{col}} — skipped (model not found)")
+
+    t0 = time.perf_counter()
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(n_workers) as pool:
+        for result, (label, spec, is_p1) in zip(
+            pool.imap(_eval_worker, worker_args), game_tasks
+        ):
+            c = counters[label]
+            if is_p1:
+                c[0] += 1                        # n_p1
+                if result == 1:   c[1] += 1      # w1
+                elif result == 0: c[2] += 1      # d1
+                else:             c[3] += 1      # l1
+            else:
+                c[4] += 1                        # n_p2
+                if result == 2:   c[5] += 1      # w2
+                elif result == 0: c[6] += 1      # d2
+                else:             c[7] += 1      # l2
+
+    # Print results table.
+    print(f"  {sep}")
+    print(f"  {'Opponent':<{col}} {'as P1':>14}  {'as P2':>14}  {'Win%':>6}")
+    print(f"  {'':.<{col}} {'W / D / L':>14}  {'W / D / L':>14}")
+    print(f"  {sep}")
+
+    csv_rows: list[dict] = []
+    for label, _, _ in opponents:
+        if label in skipped:
+            continue
+        n_p1, w1, d1, l1, n_p2, w2, d2, l2 = counters[label]
+        wins    = w1 + w2
+        draws   = d1 + d2
+        n_total = n_p1 + n_p2
+        win_pct = (wins + 0.5 * draws) / n_total * 100 if n_total else 0.0
+        print(f"  {label:<{col}} {f'{w1} / {d1} / {l1}':>14}  {f'{w2} / {d2} / {l2}':>14}  {win_pct:>5.1f}%")
+        csv_rows.append({
+            "cycle":     cycle,
+            "opponent":  label.strip(),
+            "eval_sims": eval_sims,
+            "n_as_p1": n_p1, "w_as_p1": w1, "d_as_p1": d1, "l_as_p1": l1,
+            "n_as_p2": n_p2, "w_as_p2": w2, "d_as_p2": d2, "l_as_p2": l2,
+            "win_pct": f"{win_pct:.2f}",
+        })
+
+    print(f"  {sep}")
+    print(f"  done in {time.perf_counter() - t0:.1f}s\n")
+
+    if csv_path and csv_rows:
+        _append_eval_csv(csv_path, csv_rows)
+
+
+# ── Holdout validation ───────────────────────────────────────────────────────
+
+def load_holdout(
+    data_dir:    str,
+    n_cycles:    int,
+    n_positions: int,
+    seed:        int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """
+    Sample a fixed holdout set from the last ``n_cycles`` files in ``data_dir``.
+
+    Uses a deterministic seed so the exact same positions are selected on
+    every resume.  Returns None if no data files exist in ``data_dir``.
+    """
+    if not data_dir:
+        return None
+    files = sorted(Path(data_dir).glob("cycle_*.npz"))
+    if not files:
+        return None
+    all_states, all_policies, all_values = [], [], []
+    for f in files[-n_cycles:]:
+        d = np.load(f)
+        all_states.append(d["states"])
+        all_policies.append(d["policies"])
+        all_values.append(d["values"])
+    states   = np.concatenate(all_states)
+    policies = np.concatenate(all_policies)
+    values   = np.concatenate(all_values)
+    rng = np.random.RandomState(seed)
+    idx = rng.choice(len(states), size=min(n_positions, len(states)), replace=False)
+    return states[idx], policies[idx], values[idx]
+
+
+def compute_holdout_loss(
+    model:      DualNetwork,
+    states:     np.ndarray,
+    policies:   np.ndarray,
+    values:     np.ndarray,
+    device:     torch.device,
+    batch_size: int = 4096,
+) -> dict[str, float]:
+    """Evaluate loss on the fixed holdout set without updating weights."""
+    model.eval()
+    total_sum = policy_sum = value_sum = 0.0
+    n_batches = 0
+    with torch.no_grad():
+        for i in range(0, len(states), batch_size):
+            s = torch.from_numpy(states[i : i + batch_size]).to(device)
+            p = torch.from_numpy(policies[i : i + batch_size]).to(device)
+            v = torch.from_numpy(values[i : i + batch_size]).to(device)
+            loss, lp, lv, _ = compute_loss(model, s, p, v)
+            total_sum  += loss.item()
+            policy_sum += lp.item()
+            value_sum  += lv.item()
+            n_batches  += 1
+    return {
+        "total":  total_sum  / n_batches,
+        "policy": policy_sum / n_batches,
+        "value":  value_sum  / n_batches,
+    }
+
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -869,9 +1235,20 @@ def main() -> None:
           f"Cycles planned: {start_cycle} → {start_cycle + args.cycles}")
     print()
 
+    # ── Holdout set (fixed sample; loaded once before the training loop) ────
+    holdout = load_holdout(HOLDOUT_DIR, HOLDOUT_CYCLES, HOLDOUT_SIZE)
+    if holdout is not None:
+        print(f"Holdout: {len(holdout[0]):,} positions from last {HOLDOUT_CYCLES} cycles of {HOLDOUT_DIR!r}")
+    else:
+        print(f"Holdout: none (no data found in {HOLDOUT_DIR!r})")
+    print()
+
     for cycle in range(start_cycle, start_cycle + args.cycles):
-        t_cycle = time.perf_counter()
-        lr_now  = optimizer.param_groups[0]["lr"]
+        t_cycle        = time.perf_counter()
+        lr_now         = optimizer.param_groups[0]["lr"]
+        sp_stats:       dict | None = None
+        losses:         dict | None = None
+        holdout_losses: dict | None = None
         print(f"{'='*66}")
         print(f"Cycle {cycle + 1}    LR={lr_now:.2e}")
         print(f"{'='*66}")
@@ -901,6 +1278,7 @@ def main() -> None:
                 f"  Done {sp_time:.1f}s | "
                 f"{sp_stats['n_positions']} positions | "
                 f"mean game length {sp_stats['mean_length']:.1f} | "
+                f"mean walls placed {sp_stats['mean_walls_placed']:.1f} | "
                 f"P1 {sp_stats['p1_wins']} / P2 {sp_stats['p2_wins']} / "
                 f"draws {sp_stats['draws']}"
             )
@@ -948,6 +1326,16 @@ def main() -> None:
             )
             scheduler.step()
 
+            # ── 3b. Holdout loss ─────────────────────────────────────────────
+            if holdout is not None:
+                holdout_losses = compute_holdout_loss(model, *holdout, DEVICE)
+                print(
+                    f"  Holdout  | "
+                    f"loss={holdout_losses['total']:.4f}  "
+                    f"policy={holdout_losses['policy']:.4f}  "
+                    f"value={holdout_losses['value']:.4f}"
+                )
+
         # ── 4. Checkpoint ───────────────────────────────────────────────────
         if args.smoke_test:
             print("[SMOKE TEST — model weights and checkpoint not saved]")
@@ -964,7 +1352,77 @@ def main() -> None:
                 print(f"Saved  {MODEL_PATH}")
 
         cycle_time = time.perf_counter() - t_cycle
+
+        # ── 5. Stats CSV ─────────────────────────────────────────────────────
+        if not args.smoke_test:
+            stats_path = os.path.join(MODEL_DIR, "training_stats.csv")
+            _append_stats_csv(stats_path, {
+                # Self-play results
+                "cycle":               cycle + 1,
+                "p1_wins":             sp_stats["p1_wins"]            if sp_stats else "",
+                "p2_wins":             sp_stats["p2_wins"]            if sp_stats else "",
+                "draws":               sp_stats["draws"]              if sp_stats else "",
+                "mean_game_length":    f"{sp_stats['mean_length']:.2f}"        if sp_stats else "",
+                "min_game_length":     sp_stats["min_length"]                  if sp_stats else "",
+                "max_game_length":     sp_stats["max_length"]                  if sp_stats else "",
+                "mean_walls_placed":   f"{sp_stats['mean_walls_placed']:.2f}"  if sp_stats else "",
+                "mean_policy_entropy": f"{sp_stats['mean_policy_entropy']:.4f}" if sp_stats else "",
+                # Training
+                "value_accuracy":      f"{losses['value_accuracy']:.4f}" if losses else "",
+                "loss_total":          f"{losses['total']:.6f}"         if losses else "",
+                "loss_policy":         f"{losses['policy']:.6f}"        if losses else "",
+                "loss_value":          f"{losses['value']:.6f}"         if losses else "",
+                "holdout_loss_total":  f"{holdout_losses['total']:.6f}"  if holdout_losses else "",
+                "holdout_loss_policy": f"{holdout_losses['policy']:.6f}" if holdout_losses else "",
+                "holdout_loss_value":  f"{holdout_losses['value']:.6f}"  if holdout_losses else "",
+                # Hyperparameter snapshot
+                "lr":                        f"{lr_now:.2e}",
+                "boardsize":                 BOARDSIZE,
+                "walls_per_player":          WALLS_PER_PLAYER,
+                "games_per_cycle":           args.games,
+                "mcts_sims":                 args.sims,
+                "mcts_sims_fast":            MCTS_SIMS_FAST,
+                "fast_play_prob":            FAST_PLAY_PROB,
+                "fast_kl_threshold":         FAST_KL_THRESHOLD,
+                "temp_threshold":            TEMP_THRESHOLD,
+                "c_puct":                    C_PUCT,
+                "dirichlet_alpha":           DIRICHLET_ALPHA,
+                "dirichlet_epsilon":         DIRICHLET_EPSILON,
+                "dist_bonus_weight_max":     DIST_BONUS_WEIGHT_MAX,
+                "fpu_reduction":             FPU_REDUCTION,
+                "random_wall_plies":         RANDOM_WALL_PLIES,
+                "random_wall_fraction":      RANDOM_WALL_FRACTION,
+                "buffer_cycles":             BUFFER_CYCLES,
+                "batch_size":               args.batch,
+                "train_positions_per_cycle": args.train_positions,
+                "buffer_recency_decay":      BUFFER_RECENCY_DECAY,
+                "learning_rate":             LEARNING_RATE,
+                "weight_decay":              WEIGHT_DECAY,
+                "value_loss_weight":         VALUE_LOSS_WEIGHT,
+                "lr_milestones":             str(LR_MILESTONES),
+                "lr_decay":                  LR_DECAY,
+                "filters":                   args.filters,
+                "num_residual":              args.res,
+                "num_workers":               args.workers,
+            })
+
         print(f"Cycle {cycle + 1} complete in {cycle_time:.1f}s\n")
+
+        # ── 6. Evaluation ───────────────────────────────────────────────────
+        if (
+            EVAL_EVERY > 0
+            and not args.smoke_test
+            and (cycle + 1) % EVAL_EVERY == 0
+        ):
+            run_evaluation(
+                model     = model,
+                cycle     = cycle + 1,
+                boardsize = BOARDSIZE,
+                walls     = WALLS_PER_PLAYER,
+                eval_sims = EVAL_SIMS,
+                opponents = EVAL_OPPONENTS,
+                csv_path  = os.path.join(MODEL_DIR, "eval_results.csv"),
+            )
 
 
 if __name__ == "__main__":

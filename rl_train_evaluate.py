@@ -396,4 +396,4 @@ if __name__ == "__main__":
         print(f"CYCLE {cycle}/{NUM_CYCLES}")
         print(f"{'='*60}")
         train_population(AGENT_CLASSES, epochs=EPOCHS_PER_CYCLE, benchmark_sigma=False,
-                         games_random=400, games_greedy=10)
+                         games_random=400, games_greedy=2)
