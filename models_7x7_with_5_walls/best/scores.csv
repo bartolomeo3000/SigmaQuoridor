@@ -1,0 +1,6 @@
+model,score_vs_sigma,score_vs_random,score_vs_greedy
+DoubleExpectedSarsaAgent,0.0,0.5375,0.0
+DoubleQLearningAgent,0.0,0.4975,0.0
+DoubleSarsaAgent,0.0,0.495,0.0
+QLearningAgent,0.0,0.51,0.0
+SarsaAgent,0.0,0.535,0.0
