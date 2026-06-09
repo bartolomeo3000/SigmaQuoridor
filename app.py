@@ -106,6 +106,15 @@ _AGENT_REGISTRY: dict[str, dict] = {
             num_simulations=n,
         ),
     },
+    "supervised_extended": {
+        "name": "Supervised Extended",
+        "description": "Supervised model trained on the extended dataset (best overall in tournament)",
+        "available": lambda: Path("models_7x7", "supervised_extended.pt").exists(),
+        "factory": lambda n: MCTSAgent(
+            evaluator=make_nn_evaluator(str(Path("models_7x7", "supervised_extended.pt")), device=CPU_DEVICE),
+            num_simulations=n,
+        ),
+    },
     "minimax_d2": {
         "name": "Minimax (depth 2)",
         "description": "Alpha-beta minimax search to depth 2, ordered by distance heuristic",

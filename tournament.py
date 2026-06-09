@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from benchmark_agents import GreedyDistanceAgent, MinimaxAgent, RandomAgent
 from dual_network import NNEvaluator, load_model
 from game import State
 from mcts import MCTSAgent
@@ -70,8 +71,15 @@ def _game_worker(args: tuple) -> float:
 
     device = torch.device("cpu")
 
-    def make_agent(path: str) -> MCTSAgent:
-        model = load_model(path, device=device)
+    def make_agent(spec: str):
+        if spec == "random":
+            return RandomAgent()
+        if spec == "greedy":
+            return GreedyDistanceAgent()
+        if spec.startswith("minimax:"):
+            depth = int(spec.split(":", 1)[1])
+            return MinimaxAgent(depth=depth)
+        model = load_model(spec, device=device)
         model.eval()
         return MCTSAgent(
             evaluator       = NNEvaluator(model, device=device),
@@ -162,6 +170,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--workers", type=int,   default=DEFAULT_WORKERS, metavar="N")
     p.add_argument("--out",     default="",
                    help="Optional CSV path for saving full results")
+    p.add_argument("--minimax", action="append", default=[], type=int, metavar="DEPTH",
+                   help="Include a MinimaxAgent at the given depth (repeatable)")
+    p.add_argument("--random",  action="store_true",
+                   help="Include a RandomAgent")
+    p.add_argument("--greedy",  action="store_true",
+                   help="Include a GreedyDistanceAgent")
     return p.parse_args()
 
 
@@ -178,13 +192,25 @@ def main() -> None:
         else:
             print(f"Warning: extra path not found: {extra}")
 
-    if len(paths) < 2:
-        print(f"Need at least 2 models; found {len(paths)} in {ckpt_dir}.")
-        return
-
     names = [p.stem if p.parent == ckpt_dir else str(p) for p in paths]
-    n = len(paths)
     paths_str = [str(p) for p in paths]
+
+    # Add benchmark agents (identified by a spec string, not a file path)
+    for depth in args.minimax:
+        paths_str.append(f"minimax:{depth}")
+        names.append(f"minimax-{depth}")
+    if args.random:
+        paths_str.append("random")
+        names.append("random")
+    if args.greedy:
+        paths_str.append("greedy")
+        names.append("greedy")
+
+    n = len(paths_str)
+
+    if n < 2:
+        print(f"Need at least 2 agents; found {n} (check --dir, --extra, --minimax, --random, --greedy).")
+        return
 
     if args.games % 2 != 0:
         print(f"--games must be even (got {args.games}); rounding up to {args.games + 1}.")
@@ -203,7 +229,7 @@ def main() -> None:
 
     # ── Build task list ────────────────────────────────────────────────────
     tasks:     list[tuple] = []
-    task_meta: list[tuple[int, int]] = []   # (idx_a, idx_b) for each task
+    task_meta: list[tuple[int, int, bool]] = []   # (idx_a, idx_b, a_is_p1) for each task
 
     n_per_color = args.games // 2
     for i, j in combinations(range(n), 2):
@@ -211,22 +237,39 @@ def main() -> None:
         for _ in range(n_per_color):
             tasks.append((pa, pb, BOARDSIZE, WALLS_PER_PLAYER,
                           args.sims, args.temp, True,  n_workers))
-            task_meta.append((i, j))
+            task_meta.append((i, j, True))
         for _ in range(n_per_color):
             tasks.append((pa, pb, BOARDSIZE, WALLS_PER_PLAYER,
                           args.sims, args.temp, False, n_workers))
-            task_meta.append((i, j))
+            task_meta.append((i, j, False))
 
     # ── Run games ─────────────────────────────────────────────────────────
     game_results: list[tuple[int, int, float]] = []
+    game_log: list[dict] = []   # detailed per-game records
     t0 = time.perf_counter()
 
     ctx = multiprocessing.get_context("spawn")
     with ctx.Pool(n_workers) as pool:
-        for k, (score, (i, j)) in enumerate(
+        for k, (score, (i, j, a_is_p1)) in enumerate(
             zip(pool.imap(_game_worker, tasks), task_meta)
         ):
             game_results.append((i, j, score))
+            p1_idx, p2_idx = (i, j) if a_is_p1 else (j, i)
+            if score == 0.5:
+                result = "draw"
+            elif (score == 1.0 and a_is_p1) or (score == 0.0 and not a_is_p1):
+                result = "p1_win"
+            else:
+                result = "p2_win"
+            game_log.append({
+                "game":    k + 1,
+                "agent_a": names[i],
+                "agent_b": names[j],
+                "player1": names[p1_idx],
+                "player2": names[p2_idx],
+                "result":  result,
+                "score_for_a": score,
+            })
             elapsed = time.perf_counter() - t0
             rate    = (k + 1) / elapsed
             eta     = (total_games - k - 1) / rate if rate > 0 else 0.0
@@ -292,6 +335,17 @@ def main() -> None:
                 f"{score_pct[idx]:.2f}", args.sims, args.temp,
             ])
     print(f"\nResults saved to {out_path}")
+
+    # ── Save detailed matchup CSV ──────────────────────────────────────────
+    matchup_path = out_path.replace(".csv", "_matchups.csv")
+    with open(matchup_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "game", "agent_a", "agent_b", "player1", "player2",
+            "result", "score_for_a",
+        ])
+        writer.writeheader()
+        writer.writerows(game_log)
+    print(f"Matchup details saved to {matchup_path}")
 
 
 if __name__ == "__main__":
