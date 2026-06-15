@@ -11,6 +11,12 @@ importScripts('ort.min.js');   // local copy of onnxruntime-web
 
 // ── ONNX Runtime Web ────────────────────────────────────────────────────────
 let ortSession = null;
+let _activeTaskGen = -1;  // incremented on each new task; used to cancel stale loops
+const DEFAULT_MODEL_PATH = './models/supervised_extended.onnx';
+const START_MODEL_PATH = (() => {
+  try { return new URL(self.location.href).searchParams.get('model') || DEFAULT_MODEL_PATH; }
+  catch (_) { return DEFAULT_MODEL_PATH; }
+})();
 
 // Configure ORT immediately after importScripts while ort is guaranteed defined.
 try {
@@ -27,7 +33,7 @@ try {
 (async function loadONNX() {
   try {
     // Force the WASM execution provider so WebGPU/WebGL detection is skipped.
-    ortSession = await ort.InferenceSession.create('./models/best.onnx', {
+    ortSession = await ort.InferenceSession.create(START_MODEL_PATH, {
       executionProviders: ['wasm'],
     });
     console.log('[worker] ONNX model loaded OK');
@@ -182,11 +188,13 @@ function selectLeaf(root) {
   return node;
 }
 
-async function runMCTS(state, numSims, evaluator) {
+async function runMCTS(state, numSims, evaluator, cancelToken) {
   const root     = new MCTSNode(state);
   const initVal  = await expandNode(root, evaluator);
+  if (cancelToken !== _activeTaskGen) return null;
   backup(root, initVal);
   for (let i = 0; i < numSims; i++) {
+    if (cancelToken !== _activeTaskGen) return null;
     const leaf = selectLeaf(root);
     leaf.ensureState();
     let value;
@@ -195,13 +203,15 @@ async function runMCTS(state, numSims, evaluator) {
     } else {
       value = await expandNode(leaf, evaluator);
     }
+    if (cancelToken !== _activeTaskGen) return null;
     backup(leaf, value);
   }
   return root;
 }
 
-async function selectAction(state, numSims, evaluator) {
-  const root = await runMCTS(state, numSims, evaluator);
+async function selectAction(state, numSims, evaluator, cancelToken) {
+  const root = await runMCTS(state, numSims, evaluator, cancelToken);
+  if (!root) return null;
   let best = null, bestCount = -1;
   for (const c of root.children) {
     if (c.visitCount > bestCount) { bestCount = c.visitCount; best = c; }
@@ -209,8 +219,9 @@ async function selectAction(state, numSims, evaluator) {
   return best ? best.action : (state.getLegalActions()[0] || null);
 }
 
-async function getPolicy(state, numSims, evaluator) {
-  const root  = await runMCTS(state, numSims, evaluator);
+async function getPolicy(state, numSims, evaluator, cancelToken) {
+  const root = await runMCTS(state, numSims, evaluator, cancelToken);
+  if (!root) return null;
   const total = root.children.reduce((s, c) => s + c.visitCount, 0);
   const rootQ = root.qValue;
   const policy = root.children
@@ -243,6 +254,25 @@ onmessage = async function (e) {
   const d   = e.data;
   const gen = d.gen;
 
+  if (d.type === 'cancel') {
+    _activeTaskGen = gen;
+    return;
+  }
+
+  if (d.type === 'load_model') {
+    try {
+      if (ortSession) { try { await ortSession.release(); } catch (_) {} ortSession = null; }
+      ortSession = await ort.InferenceSession.create(d.path, { executionProviders: ['wasm'] });
+      postMessage({ type: 'model_loaded' });
+    } catch (err) {
+      postMessage({ type: 'model_failed', reason: String(err.message || err) });
+    }
+    return;
+  }
+
+  // Synchronously update active gen before any await — cancels any running loop
+  _activeTaskGen = gen;
+
   // Pick evaluator based on requested agent + NN availability
   const useNN   = (d.agentId === 'alphazero' || d.agentId === 'supervised') && ortSession !== null;
   const evalFn  = useNN ? nnEvaluator : rolloutEvaluator;
@@ -250,7 +280,8 @@ onmessage = async function (e) {
 
   if (d.type === 'think') {
     const s      = stateFromMsg(d);
-    const action = await selectAction(s, numSims, evalFn);
+    const action = await selectAction(s, numSims, evalFn, gen);
+    if (action === null) return;  // cancelled
     postMessage({ type: 'move', action, gen });
 
   } else if (d.type === 'nn_eval') {
@@ -258,6 +289,7 @@ onmessage = async function (e) {
     const s      = stateFromMsg(d);
     const legal  = s.getLegalActions();
     const [priors, value] = await nnEvaluator(s, legal);
+    if (gen !== _activeTaskGen) return;  // cancelled
     const moves = legal
       .map((a, i) => ({ label: actionLabel(s, a), prob: priors[i] }))
       .sort((a, b) => b.prob - a.prob)
@@ -265,11 +297,23 @@ onmessage = async function (e) {
     postMessage({ type: 'nn_result', value, moves, current_player: s.getCurrentPlayer(), gen });
 
   } else if (d.type === 'mcts_analysis') {
-    const s             = stateFromMsg(d);
-    const { policy, rootQ } = await getPolicy(s, numSims, evalFn);
-    const moves = policy
+    const s      = stateFromMsg(d);
+    let nn = null;
+    if (ortSession) {
+      const legal = s.getLegalActions();
+      const [priors, value] = await nnEvaluator(s, legal);
+      if (gen !== _activeTaskGen) return;  // cancelled
+      const moves = legal
+        .map((a, i) => ({ label: actionLabel(s, a), prob: priors[i] }))
+        .sort((a, b) => b.prob - a.prob)
+        .slice(0, 30);
+      nn = { value, moves, current_player: s.getCurrentPlayer() };
+    }
+    const result = await getPolicy(s, numSims, evalFn, gen);
+    if (!result) return;  // cancelled
+    const moves = result.policy
       .map(({ action, prob }) => ({ label: actionLabel(s, action), prob }))
       .slice(0, 30);
-    postMessage({ type: 'mcts_result', value: rootQ, moves, current_player: s.getCurrentPlayer(), gen });
+    postMessage({ type: 'mcts_result', value: result.rootQ, moves, current_player: s.getCurrentPlayer(), nn, gen });
   }
 };

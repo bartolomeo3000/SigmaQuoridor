@@ -22,6 +22,14 @@ EXPORTS = [
     ("models_7x7/supervised_extended.pt","docs/models/supervised_extended.onnx"),
 ]
 
+# Dynamically add checkpoint exports
+_ck_src = Path("models_7x7/checkpoints")
+_ck_dst = Path("docs/models/checkpoints")
+if _ck_src.exists():
+    _ck_dst.mkdir(parents=True, exist_ok=True)
+    for _pt in sorted(_ck_src.glob("cycle_*.pt")):
+        EXPORTS.append((str(_pt), str(_ck_dst / (_pt.stem + ".onnx"))))
+
 def export(src: str, dst: str) -> None:
     src_path = Path(src)
     if not src_path.exists():
@@ -29,9 +37,11 @@ def export(src: str, dst: str) -> None:
         return
 
     checkpoint = torch.load(src_path, map_location="cpu", weights_only=False)
-    # Support both {"model": state_dict} and plain state_dict
+    # Support {"model": state_dict}, {"model_state": state_dict}, and plain state_dict
     if isinstance(checkpoint, dict) and "model" in checkpoint:
         state_dict = checkpoint["model"]
+    elif isinstance(checkpoint, dict) and "model_state" in checkpoint:
+        state_dict = checkpoint["model_state"]
     else:
         state_dict = checkpoint
     boardsize = checkpoint.get("boardsize", 7) if isinstance(checkpoint, dict) else 7

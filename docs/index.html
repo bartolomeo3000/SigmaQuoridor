@@ -283,11 +283,15 @@
     <div class="card-label">Agent</div>
     <select id="agent-select" class="agent-select"></select>
     <div id="agent-desc" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+    <div id="model-picker-row" style="display:none">
+      <span style="font-size:11px;color:var(--muted)">Checkpoint</span>
+      <select id="model-select" class="agent-select" style="margin-top:4px;margin-bottom:8px"></select>
+    </div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
-      <span id="sims-display" style="font-size:12px;font-weight:600">200</span>
+      <span id="sims-display" style="font-size:12px;font-weight:600">1200</span>
     </div>
-    <input id="sims-slider" type="range" min="50" max="2000" step="50" value="200"
+    <input id="sims-slider" type="range" min="0" max="17" step="1" value="5"
            style="width:100%;accent-color:#3fb950;cursor:pointer">
   </div>
 
@@ -343,11 +347,14 @@
   </div>
   <div class="analysis-section" style="margin-bottom:0">
     <div class="analysis-section-title">MCTS Analysis</div>
+    <select id="analysis-agent-select" class="agent-select" style="margin-bottom:4px"></select>
+    <div id="analysis-agent-desc" style="font-size:11px;color:var(--muted);margin-bottom:4px"></div>
+    <select id="analysis-model-select" class="agent-select" style="margin-bottom:8px"></select>
     <div class="mcts-sims-row">
       <span>Simulations</span>
-      <span id="analysis-sims-display">200</span>
+      <span id="analysis-sims-display">1200</span>
     </div>
-    <input id="analysis-sims-slider" type="range" min="50" max="2000" step="50" value="200"
+    <input id="analysis-sims-slider" type="range" min="0" max="17" step="1" value="5"
            style="width:100%;accent-color:#f85149;cursor:pointer;margin-bottom:8px">
     <button id="btn-run-mcts">&#x25B6; Run MCTS Analysis</button>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--muted);cursor:pointer">
@@ -407,24 +414,41 @@ let hoverCell      = null;
 let analysisHoverMove = null;
 let legalWallSet   = new Set();
 let gameMode       = 'hva';
-let numSimulations = 200;
+let numSimulations = 1200;
 let selectedAgentId = 'alphazero';
 let _agentList      = [];
 let agentThinking   = false;
 let _searchGen      = 0;
 let _nnAvailable    = false;
+let _agentManuallyChanged = false;
 let _nnLoadFailed   = false;
+let activeModelPath = './models/supervised_extended.onnx';
+let _modelLoading   = false;
+let _analysisNnAvailable   = false;
+let _analysisNnLoadFailed  = false;
+let analysisModelPath      = './models/supervised_extended.onnx';
+let _analysisModelLoading  = false;
 
-// ── Web Worker ───────────────────────────────────────────────────────────────
-let _worker = null;
+// ── Web Workers ──────────────────────────────────────────────────────────────
+let _worker         = null;
+let _analysisWorker = null;
 
 function getWorker() {
   if (!_worker) {
-    _worker = new Worker('mcts_worker.js');
-    _worker.onmessage = handleWorkerMessage;
+    _worker = new Worker(`mcts_worker.js?model=${encodeURIComponent(activeModelPath)}`);
+    _worker.onmessage = handlePlayWorkerMessage;
     _worker.onerror   = e => console.error('[worker]', e);
   }
   return _worker;
+}
+
+function getAnalysisWorker() {
+  if (!_analysisWorker) {
+    _analysisWorker = new Worker(`mcts_worker.js?model=${encodeURIComponent(analysisModelPath)}`);
+    _analysisWorker.onmessage = handleAnalysisWorkerMessage;
+    _analysisWorker.onerror   = e => console.error('[analysis-worker]', e);
+  }
+  return _analysisWorker;
 }
 
 function workerPayload(gs) {
@@ -444,12 +468,14 @@ function workerPayload(gs) {
   };
 }
 
-function handleWorkerMessage(e) {
+function handlePlayWorkerMessage(e) {
   const d = e.data;
 
   if (d.type === 'model_loaded') {
     _nnAvailable = true;
     _nnLoadFailed = false;
+    _modelLoading = false;
+    if (!_agentManuallyChanged) selectedAgentId = 'alphazero';
     initAgentList();
     return;
   }
@@ -457,15 +483,41 @@ function handleWorkerMessage(e) {
   if (d.type === 'model_failed') {
     console.error('[main] ONNX model failed to load:', d.reason);
     _nnLoadFailed = true;
-    initAgentList();   // update dropdown to show (unavailable)
+    _modelLoading = false;
+    initAgentList();
     return;
   }
 
   if (d.type === 'move') {
     agentThinking = false;
-    if (d.gen !== _searchGen) return;  // stale result from superseded search
+    if (d.gen !== _searchGen) return;
     if (!gameState || gameState.isFinished()) return;
     postMove(d.action);
+    return;
+  }
+}
+
+function handleAnalysisWorkerMessage(e) {
+  const d = e.data;
+
+  if (d.type === 'model_loaded') {
+    _analysisNnAvailable = true;
+    _analysisNnLoadFailed = false;
+    _analysisModelLoading = false;
+    if (!_analysisAgentManuallyChanged) analysisAgentId = 'alphazero';
+    initAgentList();
+    if (document.getElementById('analysis-panel').classList.contains('open')) {
+      refreshNnAnalysis();
+      if (_analysisMctsAuto && state && !state.is_finished && !isAgentTurn()) runMctsAnalysis();
+    }
+    return;
+  }
+
+  if (d.type === 'model_failed') {
+    console.error('[analysis-worker] ONNX model failed to load:', d.reason);
+    _analysisNnLoadFailed = true;
+    _analysisModelLoading = false;
+    initAgentList();
     return;
   }
 
@@ -479,7 +531,6 @@ function handleWorkerMessage(e) {
 
   if (d.type === 'nn_unavailable') {
     if (d.gen !== _analysisGen) return;
-    // Fallback: show uniform distribution placeholder
     _analysisNnData = null;
     renderAnalysis();
     return;
@@ -487,6 +538,7 @@ function handleWorkerMessage(e) {
 
   if (d.type === 'mcts_result') {
     if (d.gen !== _analysisGen) return;
+    if (d.nn) _analysisNnData = d.nn;
     _analysisMctsData = d;
     _analysisMctsRunning = false;
     const btn = document.getElementById('btn-run-mcts');
@@ -855,7 +907,9 @@ function applyState(s) {
   updateSidebar();
   if (document.getElementById('nn-panel').classList.contains('open')) openNNPanel();
   if (document.getElementById('analysis-panel').classList.contains('open')) {
+    cancelAnalysisWork();
     _analysisMctsData = null;
+    _analysisNnData = null;
     refreshNnAnalysis();
     if (_analysisMctsAuto && !isAgentTurn() && !state.is_finished) runMctsAnalysis();
   }
@@ -889,34 +943,119 @@ const AGENT_DEFS = [
   { id: 'mcts_rollout', name: 'MCTS · Rollout', description: 'Pure MCTS with random rollouts' },
 ];
 
-function initAgentList() {
-  _agentList = AGENT_DEFS.map(a => ({
-    ...a,
-    available: a.id === 'mcts_rollout' || _nnAvailable,
-  }));
-  const sel = document.getElementById('agent-select');
-  sel.innerHTML = '';
-  for (const a of _agentList) {
+const MODEL_LIST = [
+  { label: 'supervised_extended  (latest)', path: './models/supervised_extended.onnx' },
+  { label: 'supervised',                    path: './models/supervised.onnx' },
+  { label: 'Cycle 141', path: './models/checkpoints/cycle_0141.onnx' },
+  { label: 'Cycle 131', path: './models/checkpoints/cycle_0131.onnx' },
+  { label: 'Cycle 121', path: './models/checkpoints/cycle_0121.onnx' },
+  { label: 'Cycle 111', path: './models/checkpoints/cycle_0111.onnx' },
+  { label: 'Cycle 101', path: './models/checkpoints/cycle_0101.onnx' },
+  { label: 'Cycle 91',  path: './models/checkpoints/cycle_0091.onnx' },
+  { label: 'Cycle 81',  path: './models/checkpoints/cycle_0081.onnx' },
+  { label: 'Cycle 71',  path: './models/checkpoints/cycle_0071.onnx' },
+  { label: 'Cycle 61',  path: './models/checkpoints/cycle_0061.onnx' },
+  { label: 'Cycle 51',  path: './models/checkpoints/cycle_0051.onnx' },
+  { label: 'Cycle 41',  path: './models/checkpoints/cycle_0041.onnx' },
+  { label: 'Cycle 31',  path: './models/checkpoints/cycle_0031.onnx' },
+  { label: 'Cycle 21',  path: './models/checkpoints/cycle_0021.onnx' },
+  { label: 'Cycle 11',  path: './models/checkpoints/cycle_0011.onnx' },
+  { label: 'Cycle 1',   path: './models/checkpoints/cycle_0001.onnx' },
+];
+
+function _buildAgentSelect(selEl, currentId, setId, filter) {
+  const list = filter ? _agentList.filter(a => filter.includes(a.id)) : _agentList;
+  selEl.innerHTML = '';
+  for (const a of list) {
     const opt       = document.createElement('option');
     opt.value       = a.id;
     const suffix    = a.available ? '' : (_nnLoadFailed ? ' (unavailable)' : ' (loading…)');
     opt.textContent = a.name + suffix;
     opt.disabled    = !a.available;
-    if (a.id === selectedAgentId) opt.selected = true;
-    sel.appendChild(opt);
+    if (a.id === currentId) opt.selected = true;
+    selEl.appendChild(opt);
   }
-  // If selected agent became available or unavailable, pick best available
-  const current = _agentList.find(a => a.id === selectedAgentId && a.available);
+  const current = list.find(a => a.id === currentId && a.available);
   if (!current) {
-    const first = _agentList.find(a => a.available);
-    if (first) { selectedAgentId = first.id; sel.value = first.id; }
+    const first = list.find(a => a.available);
+    if (first) { setId(first.id); selEl.value = first.id; }
   }
+}
+
+function _buildAnalysisAgentSelect() {
+  const sel = document.getElementById('analysis-agent-select');
+  sel.innerHTML = '';
+  const available = _analysisNnAvailable;
+  const suffix = available ? '' : (_analysisNnLoadFailed ? ' (unavailable)' : ' (loading…)');
+  const opt = document.createElement('option');
+  opt.value = 'alphazero';
+  opt.textContent = 'SigmaQuoridor' + suffix;
+  opt.disabled = !available;
+  opt.selected = true;
+  sel.appendChild(opt);
+}
+
+function initAgentList() {
+  _agentList = AGENT_DEFS.map(a => ({
+    ...a,
+    available: a.id === 'mcts_rollout' || _nnAvailable,
+  }));
+  _buildAgentSelect(
+    document.getElementById('agent-select'),
+    selectedAgentId,
+    id => { selectedAgentId = id; }
+  );
+  _buildAnalysisAgentSelect();
   _updateAgentDesc();
+  _updateAnalysisAgentDesc();
+  buildModelSelect();
+  buildAnalysisModelSelect();
+  updateModelPickerVisibility();
 }
 
 function _updateAgentDesc() {
   const a = _agentList.find(a => a.id === selectedAgentId);
   document.getElementById('agent-desc').textContent = a ? a.description : '';
+}
+
+function _updateAnalysisAgentDesc() {
+  const a = _agentList.find(a => a.id === analysisAgentId);
+  document.getElementById('analysis-agent-desc').textContent = a ? a.description : '';
+}
+
+function buildModelSelect() {
+  const sel = document.getElementById('model-select');
+  sel.innerHTML = '';
+  sel.disabled = _modelLoading;
+  for (const m of MODEL_LIST) {
+    const opt = document.createElement('option');
+    opt.value = m.path;
+    opt.textContent = (_modelLoading && m.path === activeModelPath)
+      ? m.label + ' (loading…)'
+      : m.label;
+    if (m.path === activeModelPath) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function buildAnalysisModelSelect() {
+  const sel = document.getElementById('analysis-model-select');
+  sel.innerHTML = '';
+  sel.disabled = _analysisModelLoading;
+  for (const m of MODEL_LIST) {
+    const opt = document.createElement('option');
+    opt.value = m.path;
+    opt.textContent = (_analysisModelLoading && m.path === analysisModelPath)
+      ? m.label + ' (loading…)'
+      : m.label;
+    if (m.path === analysisModelPath) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function updateModelPickerVisibility() {
+  document.getElementById('model-picker-row').style.display =
+    selectedAgentId === 'alphazero' ? '' : 'none';
 }
 
 function currentAgentName() {
@@ -985,7 +1124,9 @@ function openNNPanel() {
 }
 
 // ── Analysis panel ────────────────────────────────────────────────────────────
-let analysisNumSims      = 200;
+let analysisNumSims      = 1200;
+let analysisAgentId      = 'alphazero';
+let _analysisAgentManuallyChanged = false;
 let _analysisMctsRunning = false;
 let _analysisMctsAuto    = false;
 let _analysisNnData      = null;
@@ -1000,18 +1141,18 @@ function openAnalysisPanel() {
 
 function refreshNnAnalysis() {
   if (!gameState || gameState.isFinished()) return;
-  if (!_nnAvailable) {
+  if (!_analysisNnAvailable) {
     _analysisNnData = null;
     renderAnalysis();
     return;
   }
   const gen = ++_analysisGen;
-  const w   = getWorker();
+  const w   = getAnalysisWorker();
   w.postMessage({
     ...workerPayload(gameState),
     type:    'nn_eval',
     numSims: analysisNumSims,
-    agentId: selectedAgentId,
+    agentId: analysisAgentId,
     gen,
   });
 }
@@ -1133,18 +1274,36 @@ function playAnalysisMove(label) {
   if (pm) { const dir = _ARROW_DIR[pm[1]]; if (dir) postMove({ type:'pawn', direction: dir }); }
 }
 
+function cancelAnalysisWork() {
+  ++_analysisGen;
+  const btn = document.getElementById('btn-run-mcts');
+  btn.classList.remove('running');
+  btn.textContent = '\u25B6 Run MCTS Analysis';
+  if (!_analysisMctsRunning) return;
+  _analysisMctsRunning = false;
+  _analysisNnAvailable = false;
+  _analysisNnLoadFailed = false;
+  _analysisModelLoading = true;
+  if (_analysisWorker) {
+    _analysisWorker.terminate();
+    _analysisWorker = null;
+  }
+  initAgentList();
+  getAnalysisWorker();
+}
+
 function runMctsAnalysis() {
-  if (_analysisMctsRunning || !gameState || gameState.isFinished()) return;
+  if (_analysisMctsRunning || !gameState || gameState.isFinished() || !_analysisNnAvailable) return;
   _analysisMctsRunning = true;
   const btn = document.getElementById('btn-run-mcts');
   btn.classList.add('running'); btn.textContent = '⏳ Running…';
   const gen = ++_analysisGen;
-  const w   = getWorker();
+  const w   = getAnalysisWorker();
   w.postMessage({
     ...workerPayload(gameState),
     type:    'mcts_analysis',
     numSims: analysisNumSims,
-    agentId: selectedAgentId,
+    agentId: analysisAgentId,
     gen,
   });
 }
@@ -1164,23 +1323,32 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (btn.dataset.mode === gameMode) return;
     gameMode = btn.dataset.mode;
+    _searchGen++;
+    agentThinking = false;
     document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('agent-card').style.display = gameMode === 'hvh' ? 'none' : '';
     hoverWall = null;
     draw(document.getElementById('board').getContext('2d'));
     updateSidebar();
-    if (state && !state.is_finished && !agentThinking && isAgentTurn())
+    if (state && !state.is_finished && isAgentTurn()) {
+      agentThinking = true;
       setTimeout(triggerAgentMove, 80);
+    }
   });
 });
+function simsFromIndex(i) {
+  return i <= 9 ? (i + 1) * 200 : (i - 9) * 1000 + 2000;
+}
 document.getElementById('sims-slider').addEventListener('input', e => {
-  numSimulations = Number(e.target.value);
+  numSimulations = simsFromIndex(Number(e.target.value));
   document.getElementById('sims-display').textContent = numSimulations;
 });
 document.getElementById('agent-select').addEventListener('change', e => {
+  _agentManuallyChanged = true;
   selectedAgentId = e.target.value;
   _updateAgentDesc();
+  updateModelPickerVisibility();
   if (gameMode === 'hvh') return;
   _searchGen++; agentThinking = false;
   updateSidebar();
@@ -1192,8 +1360,39 @@ document.getElementById('btn-analysis').addEventListener('click', () => {
   else openAnalysisPanel();
 });
 document.getElementById('analysis-sims-slider').addEventListener('input', e => {
-  analysisNumSims = Number(e.target.value);
+  analysisNumSims = simsFromIndex(Number(e.target.value));
   document.getElementById('analysis-sims-display').textContent = analysisNumSims;
+});
+document.getElementById('analysis-agent-select').addEventListener('change', e => {
+  _analysisAgentManuallyChanged = true;
+  analysisAgentId = e.target.value;
+  _updateAnalysisAgentDesc();
+  _analysisMctsData = null;
+  refreshNnAnalysis();
+});
+document.getElementById('analysis-model-select').addEventListener('change', e => {
+  analysisModelPath = e.target.value;
+  _analysisNnAvailable = false;
+  _analysisModelLoading = true;
+  _analysisMctsData = null;
+  _analysisNnData = null;
+  _analysisMctsRunning = false;
+  ++_analysisGen;
+  if (_analysisWorker) {
+    _analysisWorker.terminate();
+    _analysisWorker = null;
+  }
+  initAgentList();
+  getAnalysisWorker();
+});
+document.getElementById('model-select').addEventListener('change', e => {
+  activeModelPath = e.target.value;
+  _nnAvailable = false;
+  _modelLoading = true;
+  _searchGen++;
+  agentThinking = false;
+  initAgentList();
+  getWorker().postMessage({ type: 'load_model', path: activeModelPath });
 });
 document.getElementById('btn-run-mcts').addEventListener('click', runMctsAnalysis);
 document.getElementById('chk-auto-mcts').addEventListener('change', e => {
@@ -1203,8 +1402,9 @@ document.getElementById('chk-auto-mcts').addEventListener('change', e => {
     runMctsAnalysis();
 });
 
-// Kick off the worker early so ONNX loads in the background
+// Kick off both workers early so ONNX loads in the background
 getWorker();
+getAnalysisWorker();
 // Initial agent list (may show alphazero as loading until model loads)
 initAgentList();
 // Start the game
