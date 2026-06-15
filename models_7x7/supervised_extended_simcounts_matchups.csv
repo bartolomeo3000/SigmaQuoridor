@@ -1,0 +1,21 @@
+game,agent_a,agent_b,player1,player2,result,score_for_a,sims_a,sims_b
+1,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 800 sims,p2_win,0.0,200,800
+2,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 200 sims,p1_win,0.0,200,800
+3,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 2000 sims,p2_win,0.0,200,2000
+4,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 200 sims,p1_win,0.0,200,2000
+5,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 5000 sims,p2_win,0.0,200,5000
+6,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 200 sims,p2_win,1.0,200,5000
+7,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 10000 sims,p2_win,0.0,200,10000
+8,supervised_extended.pt @ 200 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 200 sims,p2_win,1.0,200,10000
+9,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 2000 sims,p2_win,0.0,800,2000
+10,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 800 sims,p2_win,1.0,800,2000
+11,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 5000 sims,p2_win,0.0,800,5000
+12,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 800 sims,p1_win,0.0,800,5000
+13,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 10000 sims,p2_win,0.0,800,10000
+14,supervised_extended.pt @ 800 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 800 sims,p1_win,0.0,800,10000
+15,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 5000 sims,p2_win,0.0,2000,5000
+16,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 2000 sims,p2_win,1.0,2000,5000
+17,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 10000 sims,p2_win,0.0,2000,10000
+18,supervised_extended.pt @ 2000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 2000 sims,p2_win,1.0,2000,10000
+19,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 10000 sims,p2_win,0.0,5000,10000
+20,supervised_extended.pt @ 5000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 10000 sims,supervised_extended.pt @ 5000 sims,p2_win,1.0,5000,10000

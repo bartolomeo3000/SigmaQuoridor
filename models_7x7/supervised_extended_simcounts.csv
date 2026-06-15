@@ -1,0 +1,6 @@
+rank,variant,elo,wins,draws,losses,games,score_pct,temperature
+1,supervised_extended.pt @ 10000 sims,1577.33,5,0,3,8,62.50,0.0
+2,supervised_extended.pt @ 5000 sims,1577.33,5,0,3,8,62.50,0.0
+3,supervised_extended.pt @ 2000 sims,1577.33,5,0,3,8,62.50,0.0
+4,supervised_extended.pt @ 800 sims,1425.42,3,0,5,8,37.50,0.0
+5,supervised_extended.pt @ 200 sims,1342.59,2,0,6,8,25.00,0.0

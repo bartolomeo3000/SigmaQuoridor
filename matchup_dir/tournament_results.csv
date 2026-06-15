@@ -1,0 +1,5 @@
+rank,model,elo,wins,draws,losses,games,score_pct,sims,temperature
+1,supervised_extended,1619.61,107,0,43,150,71.33,800,0.5
+2,supervised,1502.79,76,0,74,150,50.67,800,0.5
+3,cycle_0111,1444.38,60,0,90,150,40.00,800,0.5
+4,cycle_0141,1433.22,57,0,93,150,38.00,800,0.5
