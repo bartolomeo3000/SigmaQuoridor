@@ -265,6 +265,48 @@ class State {
     return [cx + dx, cy + dy];
   }
 
+  computeMoveAdvantages(legalActions) {
+    let myPos, oppPos, myDistGrid, oppDistGrid, myPathEdges, oppPathEdges;
+    if (this.isPlayer1Turn()) {
+      myPos        = this.player1pos;
+      oppPos       = this.player2pos;
+      myDistGrid   = this.p1_dist;
+      oppDistGrid  = this.p2_dist;
+      myPathEdges  = this.p1_path_edges;
+      oppPathEdges = this.p2_path_edges;
+    } else {
+      myPos        = this.player2pos;
+      oppPos       = this.player1pos;
+      myDistGrid   = this.p2_dist;
+      oppDistGrid  = this.p1_dist;
+      myPathEdges  = this.p2_path_edges;
+      oppPathEdges = this.p1_path_edges;
+    }
+
+    const N          = this.boardsize;
+    const myDistNow  = myDistGrid[myPos[1] * N + myPos[0]];
+    const oppDistNow = oppDistGrid[oppPos[1] * N + oppPos[0]];
+    const baseline   = oppDistNow - myDistNow;
+
+    return legalActions.map(action => {
+      let myDistAfter, oppDistAfter;
+      if (action.type === 'pawn') {
+        const [destX, destY] = this._pawnDest(action);
+        myDistAfter  = myDistGrid[destY * N + destX];
+        oppDistAfter = oppDistNow;
+      } else {
+        const { x, y, orientation } = action;
+        const segA = orientation === 'h' ? `h,${y},${x}`     : `v,${y},${x}`;
+        const segB = orientation === 'h' ? `h,${y},${x + 1}` : `v,${y + 1},${x}`;
+        const oppDelta = oppPathEdges !== null && (oppPathEdges.has(segA) || oppPathEdges.has(segB)) ? 1 : 0;
+        const myDelta  = myPathEdges  !== null && (myPathEdges.has(segA)  || myPathEdges.has(segB))  ? 1 : 0;
+        myDistAfter  = myDistNow + myDelta;
+        oppDistAfter = oppDistNow + oppDelta;
+      }
+      return (oppDistAfter - myDistAfter) - baseline;
+    });
+  }
+
   isPawnMoveLegal(action) {
     const [dx, dy] = action.direction;
     const [cx, cy] = this.isPlayer1Turn() ? this.player1pos : this.player2pos;

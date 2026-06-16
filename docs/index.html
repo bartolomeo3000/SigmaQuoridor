@@ -287,7 +287,19 @@
       <span style="font-size:11px;color:var(--muted)">Checkpoint</span>
       <select id="model-select" class="agent-select" style="margin-top:4px;margin-bottom:8px"></select>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+    <div id="minimax-depth-row" style="display:none">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:11px;color:var(--muted);flex:1">Depth</span>
+        <span id="minimax-depth-display" style="font-size:12px;font-weight:600">3</span>
+      </div>
+      <input id="minimax-depth-slider" type="range" min="2" max="8" step="1" value="3"
+             style="width:100%;accent-color:#3fb950;cursor:pointer;margin-bottom:8px">
+    </div>
+    <div id="simple-rl-row" style="display:none">
+      <span style="font-size:11px;color:var(--muted)">RL Agent</span>
+      <select id="simple-rl-select" class="agent-select" style="margin-top:4px;margin-bottom:8px"></select>
+    </div>
+    <div id="sims-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
       <span id="sims-display" style="font-size:12px;font-weight:600">1200</span>
     </div>
@@ -415,6 +427,8 @@ let analysisHoverMove = null;
 let legalWallSet   = new Set();
 let gameMode       = 'hva';
 let numSimulations = 1200;
+let minimaxDepth   = 3;
+let simpleRlId     = 'QLearningAgent';
 let selectedAgentId = 'alphazero';
 let _agentList      = [];
 let agentThinking   = false;
@@ -759,6 +773,12 @@ function darken(hex, amt) {
   return `rgb(${Math.max(0,(n>>16)-amt)},${Math.max(0,((n>>8)&0xff)-amt)},${Math.max(0,(n&0xff)-amt)})`;
 }
 
+function currentAgentDetail() {
+  if (selectedAgentId === 'minimax') return `${currentAgentName()} · depth ${minimaxDepth}`;
+  if (selectedAgentId === 'simple_rl') return `${currentAgentName()} · ${currentSimpleRlAgent().name}`;
+  return `${currentAgentName()} · ${numSimulations} simulations`;
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 function updateSidebar() {
   document.getElementById('walls-p1').textContent = `${state.walls_p1} wall${state.walls_p1 !== 1 ? 's' : ''}`;
@@ -775,7 +795,7 @@ function updateSidebar() {
   if (agentThinking) {
     txt.className = 'thinking';
     txt.textContent = 'Thinking…';
-    sub.textContent = `${currentAgentName()} · ${numSimulations} simulations`;
+    sub.textContent = currentAgentDetail();
   } else if (state.is_finished) {
     txt.className = '';
     txt.textContent = state.winner ? `Player ${state.winner} wins! 🎉` : 'Draw';
@@ -932,6 +952,9 @@ function triggerAgentMove() {
     ...workerPayload(gameState),
     type:     'think',
     numSims:  numSimulations,
+    minimaxDepth,
+    simpleRlId,
+    simpleRlPath: currentSimpleRlAgent().path,
     agentId:  selectedAgentId,
     gen,
   });
@@ -940,7 +963,18 @@ function triggerAgentMove() {
 // ── Agent selector ────────────────────────────────────────────────────────────
 const AGENT_DEFS = [
   { id: 'alphazero',    name: 'SigmaQuoridor',  description: 'MCTS guided by a trained neural network' },
-  { id: 'mcts_rollout', name: 'MCTS · Rollout', description: 'Pure MCTS with random rollouts' },
+  { id: 'mcts_rollout', name: 'MCTS',           description: 'Pure MCTS with random rollouts' },
+  { id: 'minimax',      name: 'Minimax',        description: 'Alpha-beta search with adjustable depth' },
+  { id: 'simple_rl',    name: 'Simple RL',      description: 'Tabular reinforcement-learning agents trained offline' },
+];
+
+const SIMPLE_RL_LIST = [
+  { id: 'QLearningAgent',           name: 'Q-Learning',              path: './models/simple_rl/QLearningAgent.json' },
+  { id: 'SarsaAgent',               name: 'SARSA',                   path: './models/simple_rl/SarsaAgent.json' },
+  { id: 'ExpectedSarsaAgent',       name: 'Expected SARSA',          path: './models/simple_rl/ExpectedSarsaAgent.json' },
+  { id: 'DoubleQLearningAgent',     name: 'Double Q-Learning',       path: './models/simple_rl/DoubleQLearningAgent.json' },
+  { id: 'DoubleSarsaAgent',         name: 'Double SARSA',            path: './models/simple_rl/DoubleSarsaAgent.json' },
+  { id: 'DoubleExpectedSarsaAgent', name: 'Double Expected SARSA',   path: './models/simple_rl/DoubleExpectedSarsaAgent.json' },
 ];
 
 const MODEL_LIST = [
@@ -998,7 +1032,7 @@ function _buildAnalysisAgentSelect() {
 function initAgentList() {
   _agentList = AGENT_DEFS.map(a => ({
     ...a,
-    available: a.id === 'mcts_rollout' || _nnAvailable,
+    available: a.id !== 'alphazero' || _nnAvailable,
   }));
   _buildAgentSelect(
     document.getElementById('agent-select'),
@@ -1010,6 +1044,7 @@ function initAgentList() {
   _updateAnalysisAgentDesc();
   buildModelSelect();
   buildAnalysisModelSelect();
+  buildSimpleRlSelect();
   updateModelPickerVisibility();
 }
 
@@ -1053,9 +1088,33 @@ function buildAnalysisModelSelect() {
   }
 }
 
+function buildSimpleRlSelect() {
+  const sel = document.getElementById('simple-rl-select');
+  sel.innerHTML = '';
+  for (const agent of SIMPLE_RL_LIST) {
+    const opt = document.createElement('option');
+    opt.value = agent.id;
+    opt.textContent = agent.name;
+    if (agent.id === simpleRlId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function currentSimpleRlAgent() {
+  return SIMPLE_RL_LIST.find(agent => agent.id === simpleRlId) || SIMPLE_RL_LIST[0];
+}
+
 function updateModelPickerVisibility() {
   document.getElementById('model-picker-row').style.display =
     selectedAgentId === 'alphazero' ? '' : 'none';
+  document.getElementById('minimax-depth-row').style.display =
+    selectedAgentId === 'minimax' ? '' : 'none';
+  document.getElementById('simple-rl-row').style.display =
+    selectedAgentId === 'simple_rl' ? '' : 'none';
+  document.getElementById('sims-row').style.display =
+    (selectedAgentId === 'minimax' || selectedAgentId === 'simple_rl') ? 'none' : 'flex';
+  document.getElementById('sims-slider').style.display =
+    (selectedAgentId === 'minimax' || selectedAgentId === 'simple_rl') ? 'none' : '';
 }
 
 function currentAgentName() {
@@ -1343,6 +1402,17 @@ function simsFromIndex(i) {
 document.getElementById('sims-slider').addEventListener('input', e => {
   numSimulations = simsFromIndex(Number(e.target.value));
   document.getElementById('sims-display').textContent = numSimulations;
+});
+document.getElementById('minimax-depth-slider').addEventListener('input', e => {
+  minimaxDepth = Number(e.target.value);
+  document.getElementById('minimax-depth-display').textContent = minimaxDepth;
+});
+document.getElementById('simple-rl-select').addEventListener('change', e => {
+  simpleRlId = e.target.value;
+  if (gameMode === 'hvh') return;
+  _searchGen++; agentThinking = false;
+  updateSidebar();
+  if (state && !state.is_finished && isAgentTurn()) setTimeout(triggerAgentMove, 80);
 });
 document.getElementById('agent-select').addEventListener('change', e => {
   _agentManuallyChanged = true;
