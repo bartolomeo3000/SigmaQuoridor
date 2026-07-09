@@ -61,17 +61,40 @@ Goal: find the `(parallel_games, leaf_batch, max_batch)` combination that
 maximizes evals/s and keeps mean batch near `max_batch` for most of a run,
 at the sim count you'll actually train with (likely 400-800).
 
-Grid to try (fix `--sims 800`, `--threads` = whatever won step 3):
+Don't take `max_batch=256` (or even 512) for granted as a ceiling — that
+was just what the M1 exploration happened to use, not a tuned value. The
+RTX 5070 Ti has far more compute and memory (16GB) than the M1's
+integrated GPU, and this model is small (filters=64, res=6), so bigger
+batches likely amortize kernel-launch/dispatch overhead better and could
+push evals/s meaningfully higher. Extend the grid with larger max_batch
+(1024, 2048) and more parallel games (2048) if the smaller values in the
+table below are still evals/s-scaling (i.e. haven't plateaued) — only
+stop increasing once evals/s stops improving or GPU memory becomes a
+constraint (watch `nvidia-smi` for both compute utilization and memory).
 
-| parallel | leaf_batch | max_batch |
-|---|---|---|
-| 128       | 8          | 256 |
-| 256       | 8          | 256 |
-| 256       | 4          | 512 |
-| 512       | 4          | 512 |
-| 512       | 2          | 512 |
-| 1024      | 1          | 512 |
-| 1024      | 2          | 512 |
+This sweep fixes `--leaf-batch 1` throughout — batching multiple leaves
+per simulation trades search quality for speed (each batched leaf is
+evaluated using slightly stale statistics from virtual loss instead of
+the fully backed-up tree), so it's a different question from pure
+engine/batching throughput and shouldn't be conflated with it here.
+Parallel games alone (no leaf batching) already gives plenty of
+batching opportunity for the GPU. See step 6 for the leaf_batch>1
+quality-vs-speed tradeoff, evaluated properly (holdout/matchups, not
+just throughput).
+
+Grid to try (fix `--sims 800`, `--leaf-batch 1`, `--threads` = whatever
+won step 3):
+
+| parallel | max_batch |
+|---|---|
+| 128       | 256 |
+| 256       | 256 |
+| 256       | 512 |
+| 512       | 512 |
+| 1024      | 512 |
+| 1024      | 1024 |
+| 2048      | 1024 |
+| 2048      | 2048 |
 
 For each: run enough games that the steady-state (middle-of-run) evals/s
 dominates the average — e.g. `--games` = 4-8x `--parallel` so the
@@ -85,27 +108,46 @@ final games/hour, peak GPU memory (`nvidia-smi` in another terminal).
 
 ## 4a. Transposition table cap sweep (`--tt-max-depth` / `--tt-max-entries`)
 
+Naming convention for both flags (fixed after the M1 testing below,
+so make sure you're on a build with this convention): **`0` = feature
+fully disabled, `-1` (or any negative) = unlimited (no ceiling/no cap),
+positive N = the actual depth ceiling / entry cap.** This applies
+independently to `--tt-max-depth` (depth ceiling for cache eligibility)
+and `--tt-max-entries` (hard cap on total cached entries across all
+shards).
+
 On the M1 (800 games, 7x7/5walls, sims=64) the shared TT's entry cap
 showed a clear plateau: cap=50,000 caused active thrashing (constant
 eviction of still-needed entries, ~553k evals, 39s), while cap=2,000,000
 (the default) eliminated virtually all eviction at that scale (~257k
-evals, ~23s — roughly 2x faster) and raising the cap further (5M, or 0 =
-uncapped) gave no additional benefit, because the actual working set of
-distinct cacheable states at that scale never approached 2M.
+evals, ~23s — roughly 2x faster) and raising the cap further (5M, or -1
+= unlimited) gave no additional benefit, because the actual working set
+of distinct cacheable states at that scale never approached 2M.
 
 The target machine will very likely need a **higher** cap than 2M to
 reach the same "no eviction" plateau, because higher throughput (more
 games/hour, more parallel games, more sims) means the self-play workload
 accumulates a bigger distinct-state working set per unit wall-clock time
 than the M1 ever could. Re-sweep on this machine rather than assuming the
-M1's numbers transfer:
+M1's numbers transfer. Use the realistic target production params —
+`--sims 800 --parallel <winner-from-step-4> --leaf-batch 1 \
+--max-batch <winner>` (don't just default to 256/1024; use whatever
+step 4 actually found, which may well be a larger max_batch/parallel
+given the RTX 5070 Ti's extra headroom), not the 64-sims smoke-test
+config used for the M1 numbers above. `--leaf-batch 1` is fixed here
+deliberately — leaf batching is a separate quality-vs-speed question
+(see step 6), not part of this throughput/TT-cap tuning track. Higher
+sims means more of each simulated tree is TT-eligible per real move, and
+more parallel games means a bigger working set, so the sweet spot found
+at sims=64 will NOT transfer to a real training-cycle config:
 
 ```bash
-for cap in 500000 2000000 5000000 10000000 20000000 0; do
+for cap in 500000 2000000 5000000 10000000 20000000 -1; do
   echo "=== tt_max_entries=$cap ==="
-  python selfplay_cpp.py --games 800 --sims 64 --threads <winner> \
-      --parallel <winner> --boardsize 7 --walls 5 --seed 42 \
-      --model models_7x7_v2/best.pt --tt-max-depth 200 \
+  python selfplay_cpp.py --games 2000 --sims 800 --threads <winner> \
+      --parallel <winner> --leaf-batch 1 --max-batch <winner> \
+      --boardsize 7 --walls 5 --seed 42 \
+      --model models_7x7_v2/best.pt --tt-max-depth -1 \
       --tt-max-entries $cap
 done
 ```
@@ -119,6 +161,16 @@ higher throughput. Win/loss/ply stats should stay bit-identical across
 every cap value tested (same seed/model) — if they don't, something is
 wrong (the eviction policy is designed to only ever affect speed, never
 correctness).
+
+Reference point only (NOT a target-machine prediction): a short M1 Air
+sanity run at these exact realistic params (`tt_max_depth=-1`,
+`tt_max_entries=20,000,000`, terminated early once steady-state was
+established — games don't need to play to completion to measure
+throughput) held steady at ~18,900-19,000 evals/s, mean batch ~255.4/256
+(maxed), games/hour settling around ~44,000, with flat ~1.95-2.0GB RSS
+memory throughout (no growth even with unlimited-depth caching). This
+only confirms the pipeline is stable/correct at this scale on MPS — do
+not use it as a CUDA throughput baseline.
 
 ## 5. bf16 / torch.compile
 
@@ -136,27 +188,44 @@ state further. Confirm `--compile` doesn't break anything on a model
 this small (compile overhead sometimes isn't worth it for tiny nets —
 measure, don't assume).
 
-## 6. Sequential vs batched MCTS quality/speed at matched batch size
+## 6. Leaf batching: quality-vs-speed tradeoff (separate question from step 4)
 
-This directly answers "does leaf_batch>1 hurt search quality, and is it
-even needed for speed" — on the Mac, matched-batch leaf_batch=1 and
-leaf_batch=8 landed in the same games/hour ballpark, but that was only
-confirmed via projection (the full run wasn't let finish). Get a *real*
-completed number here:
+Step 4 deliberately fixes `--leaf-batch 1` because batching leaves
+degrades MCTS quality (batched leaves get evaluated against slightly
+stale virtual-loss statistics instead of a fully backed-up tree) — it's
+not a free speed knob like `parallel`/`max_batch`. Whether leaf batching
+is worth it at all, and how many extra simulations would be needed to
+compensate for the quality loss, is its own question and shouldn't be
+decided from throughput numbers alone. Treat this step as open-ended
+exploration, not a single sweep:
 
-```bash
-python selfplay_cpp.py --games 512 --sims 800 --leaf-batch 1 \
-    --threads <winner> --parallel 512 --max-batch 512 \
-    --model models_7x7_v2/best.pt --out-dir /tmp/lb1
-python selfplay_cpp.py --games 512 --sims 800 --leaf-batch 8 \
-    --threads <winner> --parallel 512 --max-batch 512 \
-    --model models_7x7_v2/best.pt --out-dir /tmp/lb8
-```
-Compare: games/hour (should be close), and — if time allows — policy
-entropy / value distribution stats between the two output npz files as a
-proxy for search quality (higher-quality search should show slightly
-lower policy entropy / sharper value predictions on average, though this
-is a soft signal, not a strict test).
+- **Throughput side**: measure games/hour at matched total simulation
+  budget for a few `leaf_batch` values (1, 4, 8) at the winning
+  `parallel`/`max_batch` from step 4, e.g.:
+  ```bash
+  for lb in 1 4 8; do
+    python selfplay_cpp.py --games 512 --sims 800 --leaf-batch $lb \
+        --threads <winner> --parallel <winner> --max-batch <winner> \
+        --model models_7x7_v2/best.pt --out-dir /tmp/lb$lb
+  done
+  ```
+- **Quality side** (the part that actually matters for the tradeoff):
+  don't rely solely on soft proxies like policy entropy/value-distribution
+  stats from the self-play npz files. Instead, evaluate quality directly:
+  - Run each `leaf_batch` variant's resulting/trained checkpoint against
+    a fixed holdout set (e.g. `_holdout_check.py` if applicable) and
+    compare win-rate/loss metrics.
+  - Or run direct matchups between models trained from leaf_batch=1 data
+    vs leaf_batch=N data (see `tournament.py`/`_matchup.py`) to get a
+    real win-rate delta, not just a proxy.
+  - If leaf_batch>1 measurably hurts quality, test whether raising
+    `--sims` for the batched variant (to compensate) closes the gap
+    while still being faster in wall-clock terms than leaf_batch=1 at
+    the same higher sim count.
+- Only adopt `leaf_batch>1` for production self-play if the matchup/
+  holdout evaluation shows it's quality-neutral (or the sims-compensated
+  variant is both faster AND not worse) — a games/hour win alone is not
+  sufficient justification.
 
 ## 7. End-to-end throughput vs the old pipeline (headline number)
 

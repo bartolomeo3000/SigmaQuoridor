@@ -55,7 +55,11 @@ from game import State, Action, action_to_index, action_space_size
 # Device
 # ---------------------------------------------------------------------------
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else
+    "mps" if torch.backends.mps.is_available() else
+    "cpu"
+)
 
 # ---------------------------------------------------------------------------
 # Building blocks

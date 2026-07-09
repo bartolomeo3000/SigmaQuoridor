@@ -11,8 +11,10 @@
 #include <pybind11/stl.h>
 
 #include <chrono>
+#include <limits>
 
 #include "selfplay.hpp"
+#include "tournament.hpp"
 
 namespace py = pybind11;
 using namespace quoridor;
@@ -144,7 +146,7 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                          double dirichlet_epsilon, double fpu_reduction,
                          int temp_threshold, int max_moves,
                          double dist_bonus_max, bool training, uint64_t seed,
-                         int tt_max_depth, size_t tt_max_entries) {
+                         int tt_max_depth, long long tt_max_entries) {
                  Config cfg;
                  cfg.boardsize       = boardsize;
                  cfg.walls           = walls;
@@ -160,7 +162,11 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  cfg.training        = training;
                  cfg.seed            = seed;
                  cfg.tt_max_depth    = tt_max_depth;
-                 cfg.tt_max_entries  = tt_max_entries;
+                 // -1 (or any negative) means "unlimited" (sugar for a huge
+                 // cap); 0 disables the TT entirely; positive N is a real cap.
+                 cfg.tt_max_entries  = tt_max_entries < 0
+                     ? std::numeric_limits<size_t>::max()
+                     : static_cast<size_t>(tt_max_entries);
                  return new SelfPlayManager(cfg, num_threads, parallel_games);
              }),
              py::arg("boardsize") = 7, py::arg("walls") = 5,
@@ -168,7 +174,7 @@ PYBIND11_MODULE(quoridor_cpp, m) {
              py::arg("num_threads") = 8, py::arg("parallel_games") = 128,
              py::arg("c_puct") = 1.0, py::arg("dirichlet_alpha") = 0.3,
              py::arg("dirichlet_epsilon") = 0.25, py::arg("fpu_reduction") = 0.1,
-             py::arg("temp_threshold") = 14, py::arg("max_moves") = 200,
+             py::arg("temp_threshold") = 20, py::arg("max_moves") = 200,
              py::arg("dist_bonus_max") = 0.0, py::arg("training") = true,
              py::arg("seed") = 0, py::arg("tt_max_depth") = 8,
              py::arg("tt_max_entries") = 2'000'000)
@@ -272,4 +278,118 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  d["max_plies"] = s.max_plies;
                  return d;
              });
+
+    py::class_<TournamentManager>(m, "TournamentManager")
+        .def(py::init([](int boardsize, int walls, int max_moves, uint64_t seed,
+                         int num_threads, int parallel_games,
+                         std::vector<int> agent_model_ids,
+                         std::vector<int> agent_num_simulations,
+                         std::vector<int> agent_leaf_batch,
+                         std::vector<double> agent_c_puct,
+                         std::vector<double> agent_fpu_reduction,
+                         std::vector<double> agent_temperature) {
+                 const size_t k = agent_model_ids.size();
+                 if (agent_num_simulations.size() != k || agent_leaf_batch.size() != k ||
+                     agent_c_puct.size() != k || agent_fpu_reduction.size() != k ||
+                     agent_temperature.size() != k)
+                     throw std::invalid_argument("agent_* lists must all have the same length");
+                 TConfig cfg;
+                 cfg.boardsize = boardsize;
+                 cfg.walls     = walls;
+                 cfg.max_moves = max_moves;
+                 cfg.seed      = seed;
+                 cfg.agents.resize(k);
+                 for (size_t i = 0; i < k; ++i) {
+                     AgentSpec& a = cfg.agents[i];
+                     a.model_id        = agent_model_ids[i];
+                     a.num_simulations = agent_num_simulations[i];
+                     a.leaf_batch      = agent_leaf_batch[i];
+                     a.c_puct          = agent_c_puct[i];
+                     a.fpu_reduction   = agent_fpu_reduction[i];
+                     a.temperature     = agent_temperature[i];
+                 }
+                 return new TournamentManager(cfg, num_threads, parallel_games);
+             }),
+             py::arg("boardsize") = 7, py::arg("walls") = 5,
+             py::arg("max_moves") = 200, py::arg("seed") = 0,
+             py::arg("num_threads") = 8, py::arg("parallel_games") = 128,
+             py::arg("agent_model_ids"), py::arg("agent_num_simulations"),
+             py::arg("agent_leaf_batch"), py::arg("agent_c_puct"),
+             py::arg("agent_fpu_reduction"), py::arg("agent_temperature"),
+             "agent_* are parallel lists, one entry per registered agent "
+             "(indexed by p1_agent/p2_agent in start()).")
+        .def("num_models", &TournamentManager::num_models)
+        .def("start",
+             [](TournamentManager& self, std::vector<int> p1_agents,
+                std::vector<int> p2_agents) {
+                 if (p1_agents.size() != p2_agents.size())
+                     throw std::invalid_argument("p1_agents/p2_agents must have the same length");
+                 std::vector<MatchSpec> matches(p1_agents.size());
+                 for (size_t i = 0; i < matches.size(); ++i) {
+                     matches[i].p1_agent = p1_agents[i];
+                     matches[i].p2_agent = p2_agents[i];
+                 }
+                 self.start(std::move(matches));
+             },
+             py::arg("p1_agents"), py::arg("p2_agents"),
+             "Spawn worker threads and play one game per (p1_agents[i], p2_agents[i]) entry.")
+        .def("stop", &TournamentManager::stop)
+        .def("is_done", &TournamentManager::is_done)
+        .def("games_finished", &TournamentManager::games_finished)
+        .def("get_batch",
+             [](TournamentManager& self, int model_id, int max_batch, int flush_us) {
+                 std::vector<float> buf;
+                 int count = 0;
+                 int64_t id;
+                 {
+                     py::gil_scoped_release rel;
+                     id = self.get_batch(model_id, max_batch, flush_us, buf, count);
+                 }
+                 const int N = self.config().boardsize;
+                 py::array_t<float> arr({count, 8, N, N});
+                 if (count > 0)
+                     std::memcpy(arr.mutable_data(), buf.data(),
+                                 sizeof(float) * buf.size());
+                 return py::make_tuple(id, arr);
+             },
+             py::arg("model_id"), py::arg("max_batch") = 256, py::arg("flush_us") = 500,
+             "Block (GIL released) until leaves for model_id are available; "
+             "returns (batch_id, states[B,8,N,N]). B == 0 means no more work "
+             "for this model (either the queue is momentarily empty at the "
+             "end of the run, or the whole tournament is done).")
+        .def("put_results",
+             [](TournamentManager& self, int model_id, int64_t batch_id,
+                py::array_t<float, py::array::c_style | py::array::forcecast> logits,
+                py::array_t<float, py::array::c_style | py::array::forcecast> values) {
+                 if (logits.ndim() != 2)
+                     throw std::invalid_argument("logits must be (B, A)");
+                 const int B = int(logits.shape(0));
+                 const int A = int(logits.shape(1));
+                 if (values.size() != B)
+                     throw std::invalid_argument("values must have B elements");
+                 self.put_results(model_id, batch_id, logits.data(), values.data(), B, A);
+             },
+             py::arg("model_id"), py::arg("batch_id"), py::arg("logits"), py::arg("values"),
+             "Deliver NN outputs for a batch returned by get_batch(model_id, ...).")
+        .def("get_results",
+             [](TournamentManager& self) {
+                 std::vector<MatchResult> results = self.get_results();
+                 const int n = int(results.size());
+                 py::array_t<int> match_index(py::array::ShapeContainer{n});
+                 py::array_t<int> winner(py::array::ShapeContainer{n});
+                 py::array_t<int> plies(py::array::ShapeContainer{n});
+                 for (int i = 0; i < n; ++i) {
+                     match_index.mutable_at(i) = results[i].match_index;
+                     winner.mutable_at(i)      = results[i].winner;
+                     plies.mutable_at(i)       = results[i].plies;
+                 }
+                 py::dict d;
+                 d["match_index"] = match_index;
+                 d["winner"] = winner;
+                 d["plies"] = plies;
+                 return d;
+             },
+             "Drain results of games finished since the last call: "
+             "dict(match_index, winner, plies), aligned with the arrays "
+             "passed to start().");
 }

@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -49,7 +50,7 @@ struct Config {
     double dirichlet_alpha = 0.3;
     double dirichlet_eps   = 0.25;
     double fpu_reduction   = 0.1;
-    int temp_threshold     = 14;
+    int temp_threshold     = 20;
     int max_moves          = 200;
     double dist_bonus_max  = 0.0;   // per-side weight ~ U[0, max] per game
     bool training          = true;  // Dirichlet noise + temperature sampling
@@ -57,14 +58,17 @@ struct Config {
 
     // Shared transposition table: cache raw NN (logits, value) outputs for
     // states with real+simulated depth <= tt_max_depth, shared across all
-    // parallel games. Set negative to disable entirely.
+    // parallel games. 0 disables the TT entirely; negative means unlimited
+    // depth (no ceiling -- every eligible node may be cached/looked up).
     int tt_max_depth       = 8;
 
     // Hard cap on total cached entries across all shards (bounds worst-case
     // memory regardless of tt_max_depth/game volume). Split evenly across
     // kTTShards; each shard evicts an arbitrary entry once full. 0 disables
-    // the cap (unbounded growth for the life of the process -- not
-    // recommended for long/large runs).
+    // the TT entirely (nothing is ever cached, regardless of tt_max_depth).
+    // Pass a very large value (e.g. SIZE_MAX) for effectively unlimited
+    // growth -- not recommended for long/large runs without knowing the
+    // available RAM.
     size_t tt_max_entries  = 2'000'000;
 };
 
@@ -567,7 +571,7 @@ private:
             }
 
             bool cache_hit = false;
-            if (st.depth <= cfg_.tt_max_depth) {
+            if (tt_eligible(st.depth)) {
                 const TTKey key = tt_key(st);
                 TTEntry entry;
                 if (tt_lookup(key, entry)) {
@@ -613,7 +617,7 @@ private:
         }
 
         bool cache_hit = false;
-        if (g.state.depth <= cfg_.tt_max_depth) {
+        if (tt_eligible(g.state.depth)) {
             const TTKey key = tt_key(g.state);
             TTEntry entry;
             if (tt_lookup(key, entry)) {
@@ -727,6 +731,13 @@ private:
     };
     std::array<TTShard, kTTShards> tt_;
 
+    // 0 => TT off entirely; negative tt_max_depth => unlimited (no ceiling);
+    // otherwise only depths <= tt_max_depth are eligible.
+    bool tt_eligible(int depth) const {
+        if (cfg_.tt_max_depth == 0) return false;
+        return cfg_.tt_max_depth < 0 || depth <= cfg_.tt_max_depth;
+    }
+
     bool tt_lookup(const TTKey& key, TTEntry& out) const {
         const auto& shard = tt_[key.zhash % kTTShards];
         std::lock_guard<std::mutex> lk(shard.mu);
@@ -737,15 +748,18 @@ private:
     }
 
     void tt_insert(const TTKey& key, const float* row, int A, float value) {
+        if (cfg_.tt_max_entries == 0) return;  // TT storage fully disabled
         auto& shard = tt_[key.zhash % kTTShards];
         std::lock_guard<std::mutex> lk(shard.mu);
         auto it = shard.map.find(key);
         if (it == shard.map.end()) {
             // Only a brand-new key can grow the shard -- overwrites of an
             // existing key never need eviction. Cap is per-shard so the
-            // total table size across all shards stays bounded.
-            const size_t cap = cfg_.tt_max_entries / kTTShards;
-            if (cap > 0 && shard.map.size() >= cap) {
+            // total table size across all shards stays bounded. Guaranteed
+            // >= 1 so any positive tt_max_entries still caches something,
+            // even if it's smaller than kTTShards.
+            const size_t cap = std::max<size_t>(1, cfg_.tt_max_entries / kTTShards);
+            if (shard.map.size() >= cap) {
                 // Arbitrary (not LRU) eviction: O(1), no extra bookkeeping
                 // on the hot lookup path. Evicting just means a future hit
                 // becomes a normal NN eval again -- always correct, never

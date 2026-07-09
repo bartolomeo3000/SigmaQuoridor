@@ -14,6 +14,7 @@ Example:
 import argparse
 import os
 import re
+import sys
 import time
 
 import numpy as np
@@ -22,6 +23,8 @@ import torch
 import quoridor_cpp
 from dual_network import DualNetwork, load_model
 from game import flip_policy_lr
+
+LOG_DIR = "logs"   # per-run console transcripts (same convention as train.py)
 
 
 def pick_device() -> torch.device:
@@ -48,14 +51,47 @@ def next_cycle_path(out_dir: str) -> str:
     return os.path.join(out_dir, f"cycle_{best + 1:04d}.npz")
 
 
+# ── Console logging ──────────────────────────────────────────────────────────
+
+class _Tee:
+    """File-like object that duplicates writes to an underlying stream and a
+    log file, so every print() during a run is also saved to disk."""
+
+    def __init__(self, stream, log_file) -> None:
+        self._stream = stream
+        self._log_file = log_file
+
+    def write(self, data: str) -> int:
+        self._log_file.write(data)
+        self._log_file.flush()
+        return self._stream.write(data)
+
+    def flush(self) -> None:
+        self._log_file.flush()
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+
+def _start_run_log(log_dir: str) -> str:
+    """Tee stdout/stderr to a timestamped log file under log_dir; returns its path."""
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, f"selfplay_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    log_file = open(path, "a")
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+    return path
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--games", type=int, default=100)
-    p.add_argument("--sims", type=int, default=64)
-    p.add_argument("--threads", type=int, default=8)
-    p.add_argument("--parallel", type=int, default=128)
-    p.add_argument("--leaf-batch", type=int, default=8)
-    p.add_argument("--max-batch", type=int, default=256)
+    p.add_argument("--games", type=int, default=1024)
+    p.add_argument("--sims", type=int, default=800)
+    p.add_argument("--threads", type=int, default=7)
+    p.add_argument("--parallel", type=int, default=1024)
+    p.add_argument("--leaf-batch", type=int, default=1)
+    p.add_argument("--max-batch", type=int, default=512)
     p.add_argument("--flush-us", type=int, default=500)
     p.add_argument("--model", type=str, default=None,
                    help="checkpoint path; fresh random net if omitted")
@@ -70,15 +106,17 @@ def main() -> None:
     p.add_argument("--dirichlet-alpha", type=float, default=0.3)
     p.add_argument("--dirichlet-epsilon", type=float, default=0.25)
     p.add_argument("--fpu", type=float, default=0.1)
-    p.add_argument("--temp-threshold", type=int, default=14)
+    p.add_argument("--temp-threshold", type=int, default=20)
     p.add_argument("--dist-bonus-max", type=float, default=0.0)
     p.add_argument("--max-moves", type=int, default=200)
-    p.add_argument("--tt-max-depth", type=int, default=8,
+    p.add_argument("--tt-max-depth", type=int, default=-1,
                    help="cache NN outputs for states at depth <= this "
-                        "(shared across all parallel games); negative disables")
-    p.add_argument("--tt-max-entries", type=int, default=2_000_000,
+                        "(shared across all parallel games); 0 disables the "
+                        "TT entirely; negative means unlimited depth (no ceiling)")
+    p.add_argument("--tt-max-entries", type=int, default=5_000_000,
                    help="hard cap on total cached TT entries across all shards "
-                        "(bounds worst-case memory); 0 disables the cap")
+                        "(bounds worst-case memory); 0 disables the TT entirely; "
+                        "negative means unlimited (no cap)")
     p.add_argument("--no-augment", action="store_true",
                    help="skip left-right flip augmentation")
     p.add_argument("--compile", action="store_true",
@@ -86,6 +124,9 @@ def main() -> None:
     p.add_argument("--bf16", action="store_true",
                    help="bfloat16 autocast (CUDA only)")
     args = p.parse_args()
+
+    log_path = _start_run_log(LOG_DIR)
+    print(f"Logging console output to {log_path}")
 
     device = pick_device()
     if args.model:
@@ -116,6 +157,8 @@ def main() -> None:
     t0 = time.time()
     n_evals = 0
     n_batches = 0
+    win_evals = 0     # evals/batches since the last report, for a rolling
+    win_batches = 0   # (last-5s) average instead of a lifetime cumulative one
     last_report = t0
     try:
         with torch.inference_mode():
@@ -137,13 +180,18 @@ def main() -> None:
                 )
                 n_evals += b
                 n_batches += 1
+                win_evals += b
+                win_batches += 1
                 now = time.time()
                 if now - last_report >= 5.0:
                     el = now - t0
+                    win_elapsed = now - last_report
                     print(f"[{el:7.1f}s] games {mgr.games_finished():>5}/{args.games}"
-                          f"  evals/s {n_evals / el:8.0f}"
-                          f"  mean batch {n_evals / n_batches:6.1f}")
+                          f"  evals/s {win_evals / win_elapsed:8.0f}"
+                          f"  mean batch {win_evals / max(win_batches, 1):6.1f}")
                     last_report = now
+                    win_evals = 0
+                    win_batches = 0
     finally:
         mgr.stop()
 
