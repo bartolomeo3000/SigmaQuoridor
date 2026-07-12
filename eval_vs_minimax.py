@@ -45,11 +45,13 @@ def result_str(winner: int, model_is_p1: bool) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--depth", type=int, default=DEFAULT_DEPTH, choices=[2, 3, 4])
+    parser.add_argument("--depth", type=int, default=DEFAULT_DEPTH)
     parser.add_argument("--sims",  type=int, default=DEFAULT_SIMS)
     parser.add_argument("--games", type=int, default=N_GAMES)
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
     args = parser.parse_args()
+    if args.depth < 1:
+        parser.error("--depth must be a positive integer")
 
     model_path = Path(args.model)
     if not model_path.exists():
