@@ -40,6 +40,7 @@ import csv
 import multiprocessing
 import os
 import random
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -73,7 +74,7 @@ DIRICHLET_ALPHA   = 0.3
 DIRICHLET_EPSILON = 0.25
 DIST_BONUS_WEIGHT_MAX = 0.5  # each game samples w1, w2 ~ Uniform[0, MAX] independently per side
 FPU_REDUCTION     = 0.1    # First Play Urgency: unvisited child Q estimate = parent_Q - FPU
-TEMP_THRESHOLD    = 14     # plies ≤ this use τ=1.0 (exploration); > uses τ=0.0
+TEMP_THRESHOLD    = 20     # plies ≤ this use τ=1.0 (exploration); > uses τ=0.0
 FAST_PLAY_PROB      = 0.0  # fraction of moves that use fast MCTS; remainder use full search
 MCTS_SIMS_FAST      = 128   # simulations for fast plies (2 NN batches); not saved unless surprising
 FAST_KL_THRESHOLD   = 0.7   # KL(visit_dist ∥ prior) nats — fast positions above this are saved
@@ -92,7 +93,7 @@ BUFFER_CYCLES = 40         # keep positions from this many recent cycles
 # Training
 BATCH_SIZE                 = 256
 TRAIN_POSITIONS_PER_CYCLE  = 512_000  # gradient updates = this // BATCH_SIZE per cycle
-BUFFER_RECENCY_DECAY       = 0.96     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
+BUFFER_RECENCY_DECAY       = 0.90     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
 MIN_BUFFER_SIZE            = BATCH_SIZE
 
 # Optimizer
@@ -111,6 +112,7 @@ EVAL_EVERY = 5    # run evaluation every N cycles; 0 = never
 EVAL_SIMS  = 800   # MCTS simulations for the challenger during evaluation
 
 # Holdout validation (fixed set sampled once from a previous run's data)
+ENABLE_HOLDOUT_EVAL = False   # holdout loss is slow (HOLDOUT_SIZE positions/cycle); off by default
 HOLDOUT_DIR    = "data_7x7"   # source directory for holdout positions
 HOLDOUT_CYCLES = 10            # how many most-recent cycles to draw from
 HOLDOUT_SIZE   = 4096*100         # positions to evaluate per cycle (fixed sample)
@@ -121,24 +123,27 @@ HOLDOUT_SIZE   = 4096*100         # positions to evaluate per cycle (fixed sampl
 #        {"type": "minimax", "depth": int}
 # num_games is split: ceil(n/2) games as P1, floor(n/2) games as P2.
 EVAL_OPPONENTS: list[tuple[str, int, dict]] = [
-    ("random",          10, {"type": "random"}),
+    ("random",          2, {"type": "random"}),
     ("greedy",          2, {"type": "greedy"}),
-    ("old-best   1s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":   1}),
-    ("old-best  50s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":  50}),
-    ("old-best 100s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 100}),
-    ("old-best 200s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 200}),
-    ("old-best 400s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 400}),
-    ("old-best 800s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 800}),
+    # Disabled: models_7x7/best.pt is now the same file MODEL_DIR trains and
+    # overwrites every cycle, so these would compare the model against itself.
+    # ("old-best   1s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":   1}),
+    # ("old-best  50s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":  50}),
+    # ("old-best 100s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 100}),
+    # ("old-best 200s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 200}),
+    # ("old-best 400s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 400}),
+    # ("old-best 800s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 800}),
     ("minimax d2",       2, {"type": "minimax", "depth": 2}),
     ("minimax d3",       2, {"type": "minimax", "depth": 3}),
     # ("minimax d4",       2, {"type": "minimax", "depth": 4}),
 ]
 
 # Paths
-MODEL_DIR      = "models_7x7_v2"                            # model checkpoints and best.pt weights
+MODEL_DIR      = "models_7x7"                               # model checkpoints and best.pt weights
 MODEL_PATH     = os.path.join(MODEL_DIR, "best.pt")         # inference weights only
+LOG_DIR        = "logs"                                     # per-run console transcripts
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")     # full training state
-DATA_DIR       = "data_7x7_v2"                              # persisted self-play cycles
+DATA_DIR       = "data_7x7"                                  # persisted self-play cycles
 
 # Run
 NUM_CYCLES        = 100
@@ -1160,6 +1165,39 @@ def compute_holdout_loss(
     }
 
 
+# ── Console logging ──────────────────────────────────────────────────────────
+
+class _Tee:
+    """File-like object that duplicates writes to an underlying stream and a
+    log file, so every print() during a run is also saved to disk."""
+
+    def __init__(self, stream, log_file) -> None:
+        self._stream = stream
+        self._log_file = log_file
+
+    def write(self, data: str) -> int:
+        self._log_file.write(data)
+        self._log_file.flush()
+        return self._stream.write(data)
+
+    def flush(self) -> None:
+        self._log_file.flush()
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+
+def _start_run_log(log_dir: str) -> str:
+    """Tee stdout/stderr to a timestamped log file under log_dir; returns its path."""
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, f"train_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    log_file = open(path, "a")
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+    return path
+
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1170,6 +1208,9 @@ def main() -> None:
         args.cycles = 1      # one cycle is enough to exercise everything
         print("*** SMOKE TEST — no files will be written ***")
         print()
+    else:
+        log_path = _start_run_log(LOG_DIR)
+        print(f"Logging console output to {log_path}")
 
     os.makedirs(MODEL_DIR,      exist_ok=True)
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -1236,9 +1277,11 @@ def main() -> None:
     print()
 
     # ── Holdout set (fixed sample; loaded once before the training loop) ────
-    holdout = load_holdout(HOLDOUT_DIR, HOLDOUT_CYCLES, HOLDOUT_SIZE)
+    holdout = load_holdout(HOLDOUT_DIR, HOLDOUT_CYCLES, HOLDOUT_SIZE) if ENABLE_HOLDOUT_EVAL else None
     if holdout is not None:
         print(f"Holdout: {len(holdout[0]):,} positions from last {HOLDOUT_CYCLES} cycles of {HOLDOUT_DIR!r}")
+    elif not ENABLE_HOLDOUT_EVAL:
+        print("Holdout: disabled (ENABLE_HOLDOUT_EVAL = False)")
     else:
         print(f"Holdout: none (no data found in {HOLDOUT_DIR!r})")
     print()

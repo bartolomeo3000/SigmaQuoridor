@@ -29,7 +29,7 @@ from flask import Flask, jsonify, request, send_from_directory
 # Change these two lines when switching to a different board variant.
 DEFAULT_BOARDSIZE    = 7
 DEFAULT_WALLS        = 5
-MODEL_DIR            = "models_9x9" if DEFAULT_BOARDSIZE == 9 else "models_7x7_v2"
+MODEL_DIR            = "models_9x9" if DEFAULT_BOARDSIZE == 9 else "models_7x7"
 import re
 from game import State, PawnAction, WallAction
 from mcts import MCTSAgent
