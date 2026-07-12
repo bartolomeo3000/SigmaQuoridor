@@ -37,6 +37,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--cycles", type=int, default=20,
                    help="number of self-play+train cycles to run")
+    p.add_argument("--model-dir", type=str, default=None, metavar="DIR",
+                   help=f"override the models dir (default: {os.path.dirname(MODEL_PATH)!r})")
+    p.add_argument("--data-dir", type=str, default=None, metavar="DIR",
+                   help=f"override the data dir (default: inferred from --model-dir by "
+                        f"swapping its 'models_' prefix for 'data_', or {DATA_DIR!r} "
+                        f"if --model-dir is also omitted)")
 
     # Self-play (selfplay_cpp.py) options.
     p.add_argument("--games", type=int, default=1024)
@@ -61,9 +67,19 @@ def main() -> None:
 
     args = p.parse_args()
 
-    if not os.path.exists(MODEL_PATH):
+    model_dir = args.model_dir if args.model_dir is not None else os.path.dirname(MODEL_PATH)
+    model_path = os.path.join(model_dir, "best.pt")
+    if args.data_dir is not None:
+        data_dir = args.data_dir
+    elif args.model_dir is not None:
+        base = os.path.basename(os.path.normpath(model_dir))
+        data_dir = ("data_" + base[len("models_"):]) if base.startswith("models_") else DATA_DIR
+    else:
+        data_dir = DATA_DIR
+
+    if not os.path.exists(model_path):
         sys.exit(
-            f"{MODEL_PATH} does not exist yet. Run `python train.py` once "
+            f"{model_path} does not exist yet. Run `python train.py` once "
             f"(without --train-only) to create an initial checkpoint, or "
             f"`python selfplay_cpp.py` without --model for a fresh random net, "
             f"before using this loop."
@@ -73,8 +89,8 @@ def main() -> None:
         print(f"\n{'#' * 70}\n# Cycle {cycle + 1}/{args.cycles}: self-play\n{'#' * 70}")
         selfplay_cmd = [
             sys.executable, "selfplay_cpp.py",
-            "--model", MODEL_PATH,
-            "--out-dir", DATA_DIR,
+            "--model", model_path,
+            "--out-dir", data_dir,
             "--games", str(args.games),
             "--sims", str(args.sims),
             "--threads", str(args.threads),
@@ -91,7 +107,10 @@ def main() -> None:
         subprocess.run(selfplay_cmd, check=True)
 
         print(f"\n{'#' * 70}\n# Cycle {cycle + 1}/{args.cycles}: train\n{'#' * 70}")
-        train_cmd = [sys.executable, "train.py", "--resume", "--train-only", "--cycles", "1"]
+        train_cmd = [
+            sys.executable, "train.py", "--resume", "--train-only", "--cycles", "1",
+            "--model-dir", model_dir, "--data-dir", data_dir,
+        ]
         if args.train_positions is not None:
             train_cmd += ["--train-positions", str(args.train_positions)]
         if args.batch is not None:
