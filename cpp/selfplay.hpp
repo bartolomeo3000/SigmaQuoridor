@@ -734,7 +734,7 @@ private:
     // 0 => TT off entirely; negative tt_max_depth => unlimited (no ceiling);
     // otherwise only depths <= tt_max_depth are eligible.
     bool tt_eligible(int depth) const {
-        if (cfg_.tt_max_depth == 0) return false;
+        if (cfg_.tt_max_depth == 0 || cfg_.tt_max_entries == 0) return false;
         return cfg_.tt_max_depth < 0 || depth <= cfg_.tt_max_depth;
     }
 

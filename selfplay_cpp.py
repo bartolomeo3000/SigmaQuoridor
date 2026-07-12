@@ -92,7 +92,7 @@ def main() -> None:
     p.add_argument("--parallel", type=int, default=1024)
     p.add_argument("--leaf-batch", type=int, default=1)
     p.add_argument("--max-batch", type=int, default=512)
-    p.add_argument("--flush-us", type=int, default=500)
+    p.add_argument("--flush-us", type=int, default=100)
     p.add_argument("--model", type=str, default=None,
                    help="checkpoint path; fresh random net if omitted")
     p.add_argument("--boardsize", type=int, default=7)
@@ -108,12 +108,12 @@ def main() -> None:
     p.add_argument("--fpu", type=float, default=0.1)
     p.add_argument("--temp-threshold", type=int, default=20)
     p.add_argument("--dist-bonus-max", type=float, default=0.0)
-    p.add_argument("--max-moves", type=int, default=200)
+    p.add_argument("--max-moves", type=int, default=80)
     p.add_argument("--tt-max-depth", type=int, default=-1,
                    help="cache NN outputs for states at depth <= this "
                         "(shared across all parallel games); 0 disables the "
                         "TT entirely; negative means unlimited depth (no ceiling)")
-    p.add_argument("--tt-max-entries", type=int, default=5_000_000,
+    p.add_argument("--tt-max-entries", type=int, default=2_000_000,
                    help="hard cap on total cached TT entries across all shards "
                         "(bounds worst-case memory); 0 disables the TT entirely; "
                         "negative means unlimited (no cap)")
