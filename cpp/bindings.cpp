@@ -13,6 +13,7 @@
 #include <chrono>
 #include <limits>
 
+#include "rollout_mcts.hpp"
 #include "selfplay.hpp"
 #include "tournament.hpp"
 
@@ -62,6 +63,21 @@ public:
         py::array_t<float> arr({8, N, N});
         st_.nn_input(arr.mutable_data());
         return arr;
+    }
+
+    // Simple no-NN baseline: PUCT MCTS with uniform priors + random-rollout
+    // leaf evaluation, optionally nudged by a progressive-bias distance
+    // heuristic (see rollout_mcts.hpp). Fresh arena every call (no tree
+    // reuse across moves, same deliberate simplification as SelfPlayManager).
+    int rollout_action(int num_simulations, double c_puct, uint64_t seed,
+                        double dist_bonus_weight) {
+        int action;
+        {
+            py::gil_scoped_release rel;
+            RolloutMCTS mcts(c_puct, max_moves_, seed, dist_bonus_weight);
+            action = mcts.search(st_, hist_, num_simulations);
+        }
+        return action;
     }
 
 private:
@@ -131,7 +147,16 @@ PYBIND11_MODULE(quoridor_cpp, m) {
         .def("walls_p1", &PyState::walls_p1)
         .def("walls_p2", &PyState::walls_p2)
         .def("is_finished", &PyState::is_finished)
-        .def("nn_input", &PyState::nn_input);
+        .def("nn_input", &PyState::nn_input)
+        .def("rollout_action", &PyState::rollout_action,
+             py::arg("num_simulations") = 400, py::arg("c_puct") = 1.4,
+             py::arg("seed") = 0, py::arg("dist_bonus_weight") = 0.0,
+             "No-NN baseline: PUCT MCTS with uniform priors + random-rollout "
+             "leaf evaluation, optionally nudged by a classic MCTS "
+             "progressive-bias term h(c)/(1+N(c)) based on "
+             "(my_dist_to_goal - opp_dist_to_goal) (dist_bonus_weight, "
+             "0.0 = disabled). Returns the most-visited root action.");
+
 
     m.def("random_playouts", &random_playouts,
           py::arg("num_games") = 100, py::arg("boardsize") = 7,

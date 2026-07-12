@@ -849,6 +849,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--smoke-test", action="store_true",
                    help="dry-run: exercise the full pipeline but write no files "
                         "(forces --resume; ignores --cycles, runs exactly 1)")
+    p.add_argument("--model-dir", type=str, default=None, metavar="DIR",
+                   help=f"override MODEL_DIR (default: {MODEL_DIR!r}); also updates "
+                        f"MODEL_PATH/CHECKPOINT_DIR")
+    p.add_argument("--data-dir", type=str, default=None, metavar="DIR",
+                   help=f"override DATA_DIR (default: inferred from --model-dir by "
+                        f"swapping its 'models_' prefix for 'data_', or {DATA_DIR!r} "
+                        f"if --model-dir is also omitted)")
     return p.parse_args()
 
 
@@ -1201,7 +1208,20 @@ def _start_run_log(log_dir: str) -> str:
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global MODEL_DIR, MODEL_PATH, CHECKPOINT_DIR, DATA_DIR
     args = parse_args()
+
+    if args.model_dir is not None:
+        MODEL_DIR = args.model_dir
+        MODEL_PATH = os.path.join(MODEL_DIR, "best.pt")
+        CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")
+    if args.data_dir is not None:
+        DATA_DIR = args.data_dir
+    elif args.model_dir is not None:
+        base = os.path.basename(os.path.normpath(MODEL_DIR))
+        if base.startswith("models_"):
+            DATA_DIR = os.path.join(os.path.dirname(MODEL_DIR), "data_" + base[len("models_"):])
+        # else: no naming convention to infer from — keep the default DATA_DIR
 
     if args.smoke_test:
         args.resume = True   # never overwrite best.pt on startup
@@ -1258,8 +1278,8 @@ def main() -> None:
                 print(f"No training checkpoint found — loaded weights from {MODEL_PATH}")
             else:
                 print("No checkpoint or weights found — starting with random weights.")
-        start_cycle = max(start_cycle, _latest_data_cycle())
-        n_loaded = load_buffer_from_disk(buffer)
+        start_cycle = max(start_cycle, _latest_data_cycle(DATA_DIR))
+        n_loaded = load_buffer_from_disk(buffer, DATA_DIR)
         print(f"Resuming from cycle {start_cycle + 1}  |  "
               f"Loaded {n_loaded} data file(s) → {buffer.size():,} positions in buffer")
     else:
@@ -1335,7 +1355,7 @@ def main() -> None:
                     f"[SMOKE TEST — data not saved to disk]"
                 )
             else:
-                data_path = save_cycle_data(cycle + 1, states, policies, values)
+                data_path = save_cycle_data(cycle + 1, states, policies, values, DATA_DIR)
                 print(
                     f"Buffer: {buffer.size():,} positions "
                     f"across {buffer.num_cycles()} cycle(s)  "
