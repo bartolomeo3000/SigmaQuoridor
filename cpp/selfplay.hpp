@@ -19,7 +19,7 @@
 //     (visit_count incremented on the way down, value backed up later)
 //   * Dirichlet noise on root children (training mode)
 //   * policy target = visit distribution with temperature schedule
-//     (tau=1 for depth < temp_threshold, tau=0 after)
+//     (KataGo-style decaying selection temperature; see Config::temp_early)
 //   * root expansion is a separate eval, not counted toward num_simulations
 //
 // Deliberate deviation from mcts.py: no tree reuse between moves (fresh tree
@@ -37,6 +37,7 @@
 #include <mutex>
 #include <thread>
 
+#include "alphabeta.hpp"
 #include "engine.hpp"
 
 namespace quoridor {
@@ -50,7 +51,25 @@ struct Config {
     double dirichlet_alpha = 0.3;
     double dirichlet_eps   = 0.25;
     double fpu_reduction   = 0.1;
-    int temp_threshold     = 20;
+
+    // Move-selection temperature schedule (KataGo-style), replacing the old
+    // binary tau=1/tau=0 temp_threshold. Selection temperature decays
+    // exponentially with game depth:
+    //     tau(depth) = temp_final + (temp_early - temp_final) * 0.5^(depth / temp_halflife)
+    // and moves are sampled with probability proportional to
+    // (visits / max_visits)^(1/tau). A small nonzero temp_final keeps a
+    // little divergence pressure for the WHOLE game, fixing the trajectory
+    // lock-in effect (games that reach the same state past a hard argmax
+    // threshold used to replay bit-identical to the end — see
+    // docs/cpp_selfplay_notes.md). Moves with visits <= temp_prune_visits
+    // are never sampled (the argmax move is always eligible) so tail
+    // temperature can't play outright noise moves. Only active when
+    // training=true; otherwise selection is pure argmax.
+    double temp_early      = 0.8;
+    double temp_final      = 0.15;
+    double temp_halflife   = 20.0;
+    int temp_prune_visits  = 4;
+
     int max_moves          = 200;
     double dist_bonus_max  = 0.0;   // per-side weight ~ U[0, max] per game
     bool training          = true;  // Dirichlet noise + temperature sampling
@@ -70,6 +89,21 @@ struct Config {
     // growth -- not recommended for long/large runs without knowing the
     // available RAM.
     size_t tt_max_entries  = 2'000'000;
+
+    // Alpha-beta endgame solver: when the total walls remaining
+    // (walls_p1 + walls_p2) drops to <= solver_max_total_walls, skip
+    // NN+MCTS entirely for the REST of that game and use an exact
+    // alpha-beta solve instead. The full solved principal variation
+    // (fastest win / slowest loss tie-break) is recorded as training
+    // data with a one-hot policy target per position; the value target
+    // is still the same retroactive game-outcome convention as normal
+    // play (exact now rather than statistically inferred). -1 disables
+    // the solver entirely. node/time limits are a safety net only --
+    // measured solve cost at <=2 total walls is well under a second;
+    // a timed-out solve falls back to normal NN+MCTS play for that game.
+    int solver_max_total_walls   = 2;
+    long long solver_node_limit  = 5'000'000;
+    double solver_time_limit_s   = 4.0;
 };
 
 // ---------------------------------------------------------------------------
@@ -360,17 +394,23 @@ public:
     }
 
     // Drain completed-game data. Each output row i of `states` is 8*N*N
-    // floats; `policies` rows are A floats.
+    // floats; `policies` rows are A floats. `plies_to_end[i]` is how many
+    // plies remain (including the move taken at row i) until the game's
+    // terminal state -- 1 for the last recorded position, 0 would be the
+    // (unrecorded) terminal state itself.
     void get_data(std::vector<float>& states, std::vector<float>& policies,
-                  std::vector<float>& values, long long& n_positions) {
+                  std::vector<float>& values, std::vector<float>& plies_to_end,
+                  long long& n_positions) {
         std::lock_guard<std::mutex> lk(data_mu_);
         states.swap(out_states_);
         policies.swap(out_policies_);
         values.swap(out_values_);
+        plies_to_end.swap(out_plies_to_end_);
         n_positions = static_cast<long long>(values.size());
         out_states_.clear();
         out_policies_.clear();
         out_values_.clear();
+        out_plies_to_end_.clear();
     }
 
     struct Stats {
@@ -378,6 +418,8 @@ public:
         long long total_plies = 0, total_walls = 0;
         int min_plies = 1 << 30, max_plies = 0;
         long long games = 0;
+        // Solver diagnostics.
+        long long solver_calls = 0, solver_timeouts = 0, solver_positions = 0;
     };
 
     Stats stats() const {
@@ -422,6 +464,12 @@ private:
 
         for (;;) {
             if (g.root < 0) {
+                if (cfg_.solver_max_total_walls >= 0
+                    && g.state.walls_p1 + g.state.walls_p2 <= cfg_.solver_max_total_walls
+                    && try_solve_to_end(g)) {
+                    if (finish_game_and_maybe_reset(g, g.state.winner())) return;
+                    continue;
+                }
                 if (submit_root(gi, g)) return;   // queued a real eval; wait
                 continue;                          // resolved from cache; keep going
             }
@@ -429,8 +477,12 @@ private:
             if (g.sims_done < cfg_.num_simulations) {
                 gather(g);
                 if (!g.pending.empty()) {
-                    submit_pending(gi, g);
-                    if (g.results_missing > 0) return;  // some real evals queued; wait
+                    // NOTE: once submit_pending has queued refs, ownership of
+                    // this game transfers to the inference thread -- it may
+                    // already have completed the evals and re-readied the
+                    // game on another worker, so `g` must NOT be touched
+                    // after a true return (not even g.results_missing).
+                    if (submit_pending(gi, g)) return;  // real evals queued; wait
                     integrate_results(g);   // batch fully resolved from cache
                 }
                 continue;  // all traversals hit terminals; keep searching
@@ -449,23 +501,80 @@ private:
             }
 
             if (finished) {
-                finalize_game(g, w);
-                bool more, all_done;
-                {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    ++games_finished_;
-                    more = games_started_ < total_games_;
-                    if (more) ++games_started_;
-                    all_done = games_finished_ >= total_games_;
-                }
-                if (all_done) {
-                    cv_eval_.notify_all();
-                    cv_ready_.notify_all();
-                }
-                if (!more) return;
-                g.reset(cfg_, next_seed());
+                if (finish_game_and_maybe_reset(g, w)) return;
             }
         }
+    }
+
+    // Attempts an exact alpha-beta solve of g.state and, on success (not
+    // timed out), records the ENTIRE rest of the game as training data in
+    // one shot: one-hot policy targets along the solved (fastest-win/
+    // slowest-loss) principal variation, and advances g.state all the way
+    // to the terminal position. Returns false (no-op, `g` untouched) if
+    // the solve times out -- caller should fall back to normal NN+MCTS
+    // play for this game.
+    bool try_solve_to_end(Game& g) {
+        AlphaBetaSolver solver(cfg_.solver_node_limit, cfg_.solver_time_limit_s);
+        const AlphaBetaResult result = solver.solve(g.state, &g.history);
+        {
+            std::lock_guard<std::mutex> lk(data_mu_);
+            ++stats_.solver_calls;
+            if (result.timed_out) ++stats_.solver_timeouts;
+        }
+        if (result.timed_out) return false;
+
+        const int max_len = std::max(0, cfg_.max_moves - g.state.depth);
+        auto pv = solver.extract_pv(g.state, max_len);
+
+        const int A = action_space(cfg_.boardsize);
+        const int NN = cfg_.boardsize * cfg_.boardsize;
+        for (auto& step : pv) {
+            const GameState& state_before = step.first;
+            const uint16_t action = step.second;
+
+            const size_t sp = g.rec_planes.size();
+            g.rec_planes.resize(sp + 8 * NN);
+            state_before.nn_input(g.rec_planes.data() + sp);
+            const size_t pp = g.rec_policy.size();
+            g.rec_policy.resize(pp + A, 0.0f);
+            g.rec_policy[pp + action] = 1.0f;
+            g.rec_player.push_back(int8_t(state_before.current_player()));
+            ++g.plies;
+
+            g.state.apply(action);
+            ++g.history[g.state.zhash];
+            if (g.n_opening < Game::kOpeningTrack)
+                g.opening_hashes[g.n_opening++] = g.state.zhash;
+        }
+        {
+            std::lock_guard<std::mutex> lk(data_mu_);
+            stats_.solver_positions += (long long)pv.size();
+        }
+        return true;
+    }
+
+    // Finalizes a completed game and either resets it for reuse (returns
+    // false, caller should `continue` its loop) or signals the worker
+    // should stop (returns true, caller should `return`) once the total
+    // game quota has been reached. Shared by both the normal-play and the
+    // solver-driven completion paths.
+    bool finish_game_and_maybe_reset(Game& g, int winner) {
+        finalize_game(g, winner);
+        bool more, all_done;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            ++games_finished_;
+            more = games_started_ < total_games_;
+            if (more) ++games_started_;
+            all_done = games_finished_ >= total_games_;
+        }
+        if (all_done) {
+            cv_eval_.notify_all();
+            cv_ready_.notify_all();
+        }
+        if (!more) return true;
+        g.reset(cfg_, next_seed());
+        return false;
     }
 
     uint64_t next_seed() {
@@ -646,24 +755,35 @@ private:
         }
 
         g.results_missing = 1;
-        std::lock_guard<std::mutex> lk(mu_);
-        evalq_.push_back({gi, 0});
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            evalq_.push_back({gi, 0});
+        }
         cv_eval_.notify_all();
         return true;
     }
 
-    // Queues only the leaves not already resolved from cache. Sets
-    // g.results_missing to the number still awaiting a real NN result (may
-    // be 0 if every leaf in this batch was a cache hit).
-    void submit_pending(int gi, Game& g) {
+    // Queues only the leaves not already resolved from cache. Returns true
+    // if any real NN evals were queued (caller must stop touching the game:
+    // the moment the refs are published under mu_, the inference thread may
+    // finish them and hand the game to another worker -- re-reading
+    // g.results_missing after that is a data race, the exact cause of a
+    // Windows-only crash where two workers ran integrate_results on the
+    // same game concurrently). Returns false if every leaf in this batch
+    // was a cache hit (caller keeps ownership and integrates directly).
+    bool submit_pending(int gi, Game& g) {
         int missing = 0;
         for (const PendingLeaf& p : g.pending) if (!p.resolved) ++missing;
-        g.results_missing = missing;
-        if (missing == 0) return;
+        if (missing == 0) {
+            g.results_missing = 0;
+            return false;
+        }
         std::lock_guard<std::mutex> lk(mu_);
+        g.results_missing = missing;
         for (int i = 0; i < int(g.pending.size()); ++i)
             if (!g.pending[i].resolved) evalq_.push_back({gi, i});
         cv_eval_.notify_all();
+        return true;
     }
 
     // Expand nodes + back up NN values for every pending leaf.
@@ -787,10 +907,13 @@ private:
             total += v;
             if (v > g.arena[r.first_child + argmax].visits) argmax = k;
         }
-        const bool tau1 = cfg_.training && g.state.depth < cfg_.temp_threshold;
-        if (!tau1) {
-            probs[argmax] = 1.0;
-        } else if (total > 0) {
+        // Training target: the RAW visit distribution at every ply
+        // (LC0/KataGo convention). Temperature only affects move SELECTION
+        // below — not the recorded target. (The AlphaGo Zero paper instead
+        // recorded temperature-applied π, i.e. one-hot past a threshold;
+        // that discards the relative-strength information in the visit
+        // counts and trains false sharpness on near-equal moves.)
+        if (total > 0) {
             for (int k = 0; k < nc; ++k)
                 probs[k] = double(g.arena[r.first_child + k].visits) / double(total);
         } else {
@@ -808,14 +931,32 @@ private:
         g.rec_player.push_back(int8_t(g.state.current_player()));
         ++g.plies;
 
-        // Sample the move from the same distribution.
+        // Move selection: KataGo-style decaying temperature. Sample with
+        // probability proportional to (visits/max_visits)^(1/tau); moves
+        // with visits <= temp_prune_visits are excluded (argmax always
+        // eligible). (v/vmax)^(1/tau) underflows gracefully to pure argmax
+        // as tau -> 0, and never overflows since v/vmax <= 1.
         int chosen = argmax;
-        if (tau1) {
-            std::uniform_real_distribution<double> u(0.0, 1.0);
-            double x = u(g.rng), acc = 0.0;
-            for (int k = 0; k < nc; ++k) {
-                acc += probs[k];
-                if (x <= acc) { chosen = k; break; }
+        if (cfg_.training && total > 0) {
+            const double tau = cfg_.temp_final
+                + (cfg_.temp_early - cfg_.temp_final)
+                  * std::pow(0.5, double(g.state.depth) / cfg_.temp_halflife);
+            if (tau > 1e-3) {
+                const double vmax = double(g.arena[r.first_child + argmax].visits);
+                std::vector<double> w(nc, 0.0);
+                double wsum = 0.0;
+                for (int k = 0; k < nc; ++k) {
+                    const int v = g.arena[r.first_child + k].visits;
+                    if (k != argmax && v <= cfg_.temp_prune_visits) continue;
+                    w[k] = std::pow(double(v) / vmax, 1.0 / tau);
+                    wsum += w[k];
+                }
+                std::uniform_real_distribution<double> u(0.0, wsum);
+                double x = u(g.rng), acc = 0.0;
+                for (int k = 0; k < nc; ++k) {
+                    acc += w[k];
+                    if (w[k] > 0.0 && x <= acc) { chosen = k; break; }
+                }
             }
         }
         g.state.apply(g.arena[r.first_child + chosen].action);
@@ -844,6 +985,9 @@ private:
             float v = 0.0f;
             if (winner != 0) v = (g.rec_player[i] == winner) ? 1.0f : -1.0f;
             out_values_.push_back(v);
+            // Plies remaining (including this move) until the terminal state;
+            // last recorded position (i == plies-1) is 1 ply from terminal.
+            out_plies_to_end_.push_back(float(g.plies - i));
         }
         (void)A; (void)NN;
 
@@ -879,7 +1023,7 @@ private:
     std::atomic<uint64_t> seed_counter_{1};
 
     mutable std::mutex data_mu_;
-    std::vector<float> out_states_, out_policies_, out_values_;
+    std::vector<float> out_states_, out_policies_, out_values_, out_plies_to_end_;
     Stats stats_;
 
     // Diagnostic only (see get_openings()).

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <limits>
 
+#include "alphabeta.hpp"
 #include "rollout_mcts.hpp"
 #include "selfplay.hpp"
 #include "tournament.hpp"
@@ -78,6 +79,26 @@ public:
             action = mcts.search(st_, hist_, num_simulations);
         }
         return action;
+    }
+
+    // Exact alpha-beta solve of the current position (searches to full
+    // terminal depth -- no heuristic leaf evaluation -- so the result is
+    // a proven game-theoretic value, not an estimate, UNLESS the node/time
+    // budget was exhausted first (check "timed_out" in the returned dict).
+    py::dict solve_alphabeta(long long node_limit = -1, double time_limit_s = -1.0) {
+        AlphaBetaResult r;
+        {
+            py::gil_scoped_release rel;
+            AlphaBetaSolver solver(node_limit, time_limit_s);
+            r = solver.solve(st_, &hist_);
+        }
+        py::dict d;
+        d["value"] = r.value;
+        d["dist"] = r.dist;
+        d["best_action"] = r.best_action == 0xFFFF ? py::object(py::none()) : py::cast(int(r.best_action));
+        d["nodes"] = r.nodes;
+        d["timed_out"] = r.timed_out;
+        return d;
     }
 
 private:
@@ -155,8 +176,14 @@ PYBIND11_MODULE(quoridor_cpp, m) {
              "leaf evaluation, optionally nudged by a classic MCTS "
              "progressive-bias term h(c)/(1+N(c)) based on "
              "(my_dist_to_goal - opp_dist_to_goal) (dist_bonus_weight, "
-             "0.0 = disabled). Returns the most-visited root action.");
-
+             "0.0 = disabled). Returns the most-visited root action.")
+        .def("solve_alphabeta", &PyState::solve_alphabeta,
+             py::arg("node_limit") = -1, py::arg("time_limit_s") = -1.0,
+             "Exact alpha-beta solve of the current position (searches to "
+             "full terminal depth, distance-heuristic move ordering only -- "
+             "does not affect exactness). Returns dict(value, best_action, "
+             "nodes, timed_out); value/best_action are only proven exact "
+             "when timed_out is False.");
 
     m.def("random_playouts", &random_playouts,
           py::arg("num_games") = 100, py::arg("boardsize") = 7,
@@ -169,9 +196,13 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                          int leaf_batch, int num_threads, int parallel_games,
                          double c_puct, double dirichlet_alpha,
                          double dirichlet_epsilon, double fpu_reduction,
-                         int temp_threshold, int max_moves,
+                         double temp_early, double temp_final,
+                         double temp_halflife, int temp_prune_visits,
+                         int max_moves,
                          double dist_bonus_max, bool training, uint64_t seed,
-                         int tt_max_depth, long long tt_max_entries) {
+                         int tt_max_depth, long long tt_max_entries,
+                         int solver_max_total_walls, long long solver_node_limit,
+                         double solver_time_limit_s) {
                  Config cfg;
                  cfg.boardsize       = boardsize;
                  cfg.walls           = walls;
@@ -181,7 +212,10 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  cfg.dirichlet_alpha = dirichlet_alpha;
                  cfg.dirichlet_eps   = dirichlet_epsilon;
                  cfg.fpu_reduction   = fpu_reduction;
-                 cfg.temp_threshold  = temp_threshold;
+                 cfg.temp_early      = temp_early;
+                 cfg.temp_final      = temp_final;
+                 cfg.temp_halflife   = temp_halflife;
+                 cfg.temp_prune_visits = temp_prune_visits;
                  cfg.max_moves       = max_moves;
                  cfg.dist_bonus_max  = dist_bonus_max;
                  cfg.training        = training;
@@ -192,6 +226,9 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  cfg.tt_max_entries  = tt_max_entries < 0
                      ? std::numeric_limits<size_t>::max()
                      : static_cast<size_t>(tt_max_entries);
+                 cfg.solver_max_total_walls = solver_max_total_walls;
+                 cfg.solver_node_limit      = solver_node_limit;
+                 cfg.solver_time_limit_s    = solver_time_limit_s;
                  return new SelfPlayManager(cfg, num_threads, parallel_games);
              }),
              py::arg("boardsize") = 7, py::arg("walls") = 5,
@@ -199,10 +236,15 @@ PYBIND11_MODULE(quoridor_cpp, m) {
              py::arg("num_threads") = 8, py::arg("parallel_games") = 128,
              py::arg("c_puct") = 1.0, py::arg("dirichlet_alpha") = 0.3,
              py::arg("dirichlet_epsilon") = 0.25, py::arg("fpu_reduction") = 0.1,
-             py::arg("temp_threshold") = 20, py::arg("max_moves") = 200,
+             py::arg("temp_early") = 0.8, py::arg("temp_final") = 0.15,
+             py::arg("temp_halflife") = 6.0, py::arg("temp_prune_visits") = 4,
+             py::arg("max_moves") = 200,
              py::arg("dist_bonus_max") = 0.0, py::arg("training") = true,
              py::arg("seed") = 0, py::arg("tt_max_depth") = 8,
-             py::arg("tt_max_entries") = 2'000'000)
+             py::arg("tt_max_entries") = 2'000'000,
+             py::arg("solver_max_total_walls") = 2,
+             py::arg("solver_node_limit") = 5'000'000,
+             py::arg("solver_time_limit_s") = 4.0)
         .def("start", &SelfPlayManager::start, py::arg("total_games"),
              "Spawn worker threads and begin playing total_games games.")
         .def("stop", &SelfPlayManager::stop)
@@ -244,14 +286,15 @@ PYBIND11_MODULE(quoridor_cpp, m) {
              "logits: raw policy logits (B, A); values: (B,) in [-1, 1].")
         .def("get_data",
              [](SelfPlayManager& self) {
-                 std::vector<float> s, p, v;
+                 std::vector<float> s, p, v, pte;
                  long long n = 0;
-                 self.get_data(s, p, v, n);
+                 self.get_data(s, p, v, pte, n);
                  const int N = self.config().boardsize;
                  const int A = action_space(N);
                  py::array_t<float> states({int(n), 8, N, N});
                  py::array_t<float> policies({int(n), A});
                  py::array_t<float> values(py::array::ShapeContainer{int(n)});
+                 py::array_t<float> plies_to_end(py::array::ShapeContainer{int(n)});
                  if (n > 0) {
                      std::memcpy(states.mutable_data(), s.data(),
                                  sizeof(float) * s.size());
@@ -259,14 +302,18 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                                  sizeof(float) * p.size());
                      std::memcpy(values.mutable_data(), v.data(),
                                  sizeof(float) * v.size());
+                     std::memcpy(plies_to_end.mutable_data(), pte.data(),
+                                 sizeof(float) * pte.size());
                  }
                  py::dict d;
                  d["states"] = states;
                  d["policies"] = policies;
                  d["values"] = values;
+                 d["plies_to_end"] = plies_to_end;
                  return d;
              },
-             "Drain positions from completed games: dict(states, policies, values).")
+             "Drain positions from completed games: dict(states, policies, values, "
+             "plies_to_end).")
         .def("get_openings",
              [](SelfPlayManager& self) {
                  std::vector<std::array<uint64_t, Game::kOpeningTrack>> openings;
@@ -301,6 +348,9 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  d["mean_walls"] = s.games ? double(s.total_walls) / s.games : 0.0;
                  d["min_plies"] = s.games ? s.min_plies : 0;
                  d["max_plies"] = s.max_plies;
+                 d["solver_calls"] = s.solver_calls;
+                 d["solver_timeouts"] = s.solver_timeouts;
+                 d["solver_positions"] = s.solver_positions;
                  return d;
              });
 

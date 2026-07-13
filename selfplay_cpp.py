@@ -78,7 +78,9 @@ def _start_run_log(log_dir: str) -> str:
     """Tee stdout/stderr to a timestamped log file under log_dir; returns its path."""
     os.makedirs(log_dir, exist_ok=True)
     path = os.path.join(log_dir, f"selfplay_{time.strftime('%Y%m%d_%H%M%S')}.log")
-    log_file = open(path, "a")
+    # utf-8 explicitly: default encoding on Windows is cp1252, which can't
+    # encode non-ASCII characters (e.g. arrows) some log messages use.
+    log_file = open(path, "a", encoding="utf-8")
     sys.stdout = _Tee(sys.stdout, log_file)
     sys.stderr = _Tee(sys.stderr, log_file)
     return path
@@ -92,13 +94,17 @@ def main() -> None:
     p.add_argument("--parallel", type=int, default=1024)
     p.add_argument("--leaf-batch", type=int, default=1)
     p.add_argument("--max-batch", type=int, default=512)
-    p.add_argument("--flush-us", type=int, default=100)
+    p.add_argument("--flush-us", type=int, default=500)
     p.add_argument("--model", type=str, default=None,
                    help="checkpoint path; fresh random net if omitted")
     p.add_argument("--boardsize", type=int, default=7)
     p.add_argument("--walls", type=int, default=5)
     p.add_argument("--filters", type=int, default=64)
     p.add_argument("--res", type=int, default=6)
+    p.add_argument("--gpool-every", type=int, default=0,
+                   help="every k-th residual block is a KataGo-style global-"
+                        "pooling block (0 = none); only used for a fresh "
+                        "random net (--model omitted)")
     p.add_argument("--out-dir", type=str, default=None,
                    help="save cycle_NNNN.npz here (skip saving if omitted)")
     p.add_argument("--seed", type=int, default=0)
@@ -106,9 +112,17 @@ def main() -> None:
     p.add_argument("--dirichlet-alpha", type=float, default=0.3)
     p.add_argument("--dirichlet-epsilon", type=float, default=0.25)
     p.add_argument("--fpu", type=float, default=0.1)
-    p.add_argument("--temp-threshold", type=int, default=20)
+    p.add_argument("--temp-early", type=float, default=0.8,
+                   help="selection temperature at ply 0 (KataGo-style schedule)")
+    p.add_argument("--temp-final", type=float, default=0.15,
+                   help="asymptotic selection temperature late in the game "
+                        "(small nonzero value keeps trajectories diverging)")
+    p.add_argument("--temp-halflife", type=float, default=6.0,
+                   help="plies for the early->final temperature gap to halve")
+    p.add_argument("--temp-prune-visits", type=int, default=4,
+                   help="moves with <= this many visits are never sampled")
     p.add_argument("--dist-bonus-max", type=float, default=0.0)
-    p.add_argument("--max-moves", type=int, default=80)
+    p.add_argument("--max-moves", type=int, default=160)
     p.add_argument("--tt-max-depth", type=int, default=-1,
                    help="cache NN outputs for states at depth <= this "
                         "(shared across all parallel games); 0 disables the "
@@ -117,10 +131,22 @@ def main() -> None:
                    help="hard cap on total cached TT entries across all shards "
                         "(bounds worst-case memory); 0 disables the TT entirely; "
                         "negative means unlimited (no cap)")
+    p.add_argument("--solver-max-total-walls", type=int, default=2,
+                   help="when walls_p1+walls_p2 drops to <= this, skip NN+MCTS "
+                        "and use an exact alpha-beta solve for the rest of the "
+                        "game (one-hot policy targets along the fastest-win/"
+                        "slowest-loss line); -1 disables the solver entirely")
+    p.add_argument("--solver-node-limit", type=int, default=5_000_000,
+                   help="safety cap on solver nodes; a timed-out solve falls "
+                        "back to normal NN+MCTS play for that game")
+    p.add_argument("--solver-time-limit-s", type=float, default=4.0,
+                   help="safety cap on solver wall-clock seconds per position")
     p.add_argument("--no-augment", action="store_true",
                    help="skip left-right flip augmentation")
     p.add_argument("--compile", action="store_true",
-                   help="torch.compile the model")
+                   help="torch.compile the model using the 'cudagraphs' backend "
+                        "(doesn't require Triton, unlike the default 'inductor' "
+                        "backend which isn't reliably available on native Windows)")
     p.add_argument("--bf16", action="store_true",
                    help="bfloat16 autocast (CUDA only)")
     args = p.parse_args()
@@ -134,11 +160,11 @@ def main() -> None:
         print(f"loaded model {args.model}")
     else:
         model = DualNetwork(boardsize=args.boardsize, filters=args.filters,
-                            num_residual=args.res).to(device)
+                            num_residual=args.res, gpool_every=args.gpool_every).to(device)
         print("using fresh random network")
     model.eval()
     if args.compile:
-        model = torch.compile(model)
+        model = torch.compile(model, backend="cudagraphs")
     use_bf16 = args.bf16 and device.type == "cuda"
     print(f"device={device}  bf16={use_bf16}  compiled={args.compile}")
 
@@ -148,9 +174,14 @@ def main() -> None:
         num_threads=args.threads, parallel_games=args.parallel,
         c_puct=args.c_puct, dirichlet_alpha=args.dirichlet_alpha,
         dirichlet_epsilon=args.dirichlet_epsilon, fpu_reduction=args.fpu,
-        temp_threshold=args.temp_threshold, max_moves=args.max_moves,
+        temp_early=args.temp_early, temp_final=args.temp_final,
+        temp_halflife=args.temp_halflife, temp_prune_visits=args.temp_prune_visits,
+        max_moves=args.max_moves,
         dist_bonus_max=args.dist_bonus_max, training=True, seed=args.seed,
         tt_max_depth=args.tt_max_depth, tt_max_entries=args.tt_max_entries,
+        solver_max_total_walls=args.solver_max_total_walls,
+        solver_node_limit=args.solver_node_limit,
+        solver_time_limit_s=args.solver_time_limit_s,
     )
     mgr.start(args.games)
 
@@ -201,6 +232,7 @@ def main() -> None:
     states = data["states"]
     policies = data["policies"]
     values = data["values"]
+    plies_to_end = data["plies_to_end"]
     print(f"\ndone: {stats['games']} games in {elapsed:.1f}s "
           f"({stats['games'] / elapsed * 3600:.0f} games/hour)")
     print(f"  P1 {stats['p1_wins']}  P2 {stats['p2_wins']}  draws {stats['draws']}")
@@ -215,13 +247,15 @@ def main() -> None:
         states = np.concatenate([states, np.flip(states, axis=3)])
         policies = np.concatenate([policies, policies[:, perm]])
         values = np.concatenate([values, values])
+        plies_to_end = np.concatenate([plies_to_end, plies_to_end])
         print(f"  after LR augmentation: {len(values)} positions")
 
     if args.out_dir and len(values) > 0:
         path = next_cycle_path(args.out_dir)
         np.savez_compressed(path, states=states.astype(np.float32),
                             policies=policies.astype(np.float32),
-                            values=values.astype(np.float32))
+                            values=values.astype(np.float32),
+                            plies_to_end=plies_to_end.astype(np.float32))
         print(f"  saved {path}")
 
 

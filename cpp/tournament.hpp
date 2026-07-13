@@ -339,11 +339,13 @@ private:
             if (g.sims_done < ag.num_simulations) {
                 gather(g);
                 if (!g.pending.empty()) {
-                    submit_pending(gi, g);
-                    if (g.results_missing > 0) return;  // real evals queued; wait
-                    integrate_results(g);   // (unreachable: no TT means this
-                                             // branch never has 0 missing here,
-                                             // kept for structural symmetry)
+                    // NOTE: once submit_pending has queued refs, ownership of
+                    // this game transfers to the inference thread -- do not
+                    // touch `g` again after a true return (see submit_pending).
+                    if (submit_pending(gi, g)) return;  // real evals queued; wait
+                    integrate_results(g);   // (unreachable: no TT means every
+                                             // pending leaf always needs a
+                                             // real eval; kept for symmetry)
                 }
                 continue;  // all traversals hit terminals; keep searching
             }
@@ -510,14 +512,26 @@ private:
         cv_eval_.notify_all();
     }
 
-    void submit_pending(int gi, TGame& g) {
-        g.results_missing = int(g.pending.size());
-        if (g.results_missing == 0) return;
+    // Returns true if real NN evals were queued (caller must stop touching
+    // the game: the moment the refs are published under mu_, the inference
+    // thread may finish them and hand the game to another worker -- reading
+    // g.results_missing after that races with put_results decrementing it
+    // on a different thread. Mirrors the fix applied to selfplay.hpp for
+    // the identical Windows crash there.) Returns false if there was
+    // nothing to submit (empty pending list).
+    bool submit_pending(int gi, TGame& g) {
+        const int n = int(g.pending.size());
+        if (n == 0) {
+            g.results_missing = 0;
+            return false;
+        }
         const int model_id = g.cur_agent().model_id;
         std::lock_guard<std::mutex> lk(mu_);
-        for (int i = 0; i < int(g.pending.size()); ++i)
+        g.results_missing = n;
+        for (int i = 0; i < n; ++i)
             evalq_.at(model_id).push_back({gi, i});
         cv_eval_.notify_all();
+        return true;
     }
 
     void integrate_results(TGame& g) {

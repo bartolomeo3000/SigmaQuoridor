@@ -80,7 +80,9 @@ class _Tee:
 def _start_run_log(log_dir: str) -> str:
     os.makedirs(log_dir, exist_ok=True)
     path = os.path.join(log_dir, f"tournament_{time.strftime('%Y%m%d_%H%M%S')}.log")
-    log_file = open(path, "a")
+    # utf-8 explicitly: default encoding on Windows is cp1252, which can't
+    # encode the box-drawing characters used in the results table below.
+    log_file = open(path, "a", encoding="utf-8")
     import sys
     sys.stdout = _Tee(sys.stdout, log_file)
     sys.stderr = _Tee(sys.stderr, log_file)
@@ -156,7 +158,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fpu", type=float, default=0.1)
     p.add_argument("--boardsize", type=int, default=BOARDSIZE)
     p.add_argument("--walls", type=int, default=WALLS_PER_PLAYER)
-    p.add_argument("--max-moves", type=int, default=200)
+    p.add_argument("--max-moves", type=int, default=100)
     p.add_argument("--threads", type=int, default=8, help="MCTS worker threads")
     p.add_argument("--parallel", type=int, default=128, help="concurrent games")
     p.add_argument("--max-batch", type=int, default=256)

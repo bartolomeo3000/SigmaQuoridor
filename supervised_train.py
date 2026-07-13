@@ -25,7 +25,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 
-from dual_network import DEVICE, DualNetwork, ViTDualNetwork, save_model
+from dual_network import DEVICE, DualNetwork, save_model
 from game import action_space_size
 
 # ── Defaults ────────────────────────────────────────────────────────────────
@@ -40,15 +40,14 @@ BATCH_SIZE   = 512
 LR           = 3e-4
 WEIGHT_DECAY = 1e-4
 OUT_PATH     = "models_7x7/supervised_extended.pt"
-# ViT defaults
-EMBED_DIM  = 128
-NUM_HEADS  = 4
-NUM_LAYERS = 6
-MLP_RATIO  = 4.0
 
 
-def load_data(data_dir: str, num_cycles: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    files = sorted(glob.glob(f"{data_dir}/cycle_*.npz"))[-num_cycles:]
+def load_data(data_dir: str, num_cycles: int,
+              skip_latest: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    files = sorted(glob.glob(f"{data_dir}/cycle_*.npz"))
+    if skip_latest > 0:
+        files = files[:-skip_latest]
+    files = files[-num_cycles:]
     if not files:
         raise FileNotFoundError(f"No cycle files found in {data_dir}")
     print(f"Loading {len(files)} cycles  ({files[0]} … {files[-1]})")
@@ -66,7 +65,8 @@ def load_data(data_dir: str, num_cycles: int) -> tuple[np.ndarray, np.ndarray, n
 
 
 def train(args: argparse.Namespace) -> None:
-    states_np, policies_np, values_np = load_data(args.data_dir, args.cycles)
+    states_np, policies_np, values_np = load_data(args.data_dir, args.cycles,
+                                                  args.skip_latest)
 
     # Move to tensors
     states   = torch.from_numpy(states_np).float()
@@ -82,30 +82,16 @@ def train(args: argparse.Namespace) -> None:
         from dual_network import load_model
         model = load_model(args.resume).to(DEVICE)
         total_params = sum(p.numel() for p in model.parameters())
-        if isinstance(model, ViTDualNetwork):
-            print(f"\nResuming from {args.resume} — boardsize={model.boardsize}  "
-                  f"embed_dim={model.embed_dim}  num_heads={model.num_heads}  "
-                  f"num_layers={model.num_layers}  params={total_params:,}")
-        else:
-            print(f"\nResuming from {args.resume} — boardsize={model.boardsize}  "
-                  f"filters={model.filters}  residual_blocks={model.num_residual}  params={total_params:,}")
-    elif args.vit:
-        model = ViTDualNetwork(
-            boardsize  = args.boardsize,
-            embed_dim  = args.embed_dim,
-            num_heads  = args.num_heads,
-            num_layers = args.num_layers,
-            mlp_ratio  = args.mlp_ratio,
-        ).to(DEVICE)
-        total_params = sum(p.numel() for p in model.parameters())
-        print(f"\nFresh ViT model — boardsize={args.boardsize}  embed_dim={args.embed_dim}  "
-              f"num_heads={args.num_heads}  num_layers={args.num_layers}  params={total_params:,}")
+        print(f"\nResuming from {args.resume} — boardsize={model.boardsize}  "
+              f"filters={model.filters}  residual_blocks={model.num_residual}  params={total_params:,}")
     else:
         model = DualNetwork(boardsize=args.boardsize, filters=args.filters,
-                            num_residual=args.num_residual).to(DEVICE)
+                            num_residual=args.num_residual,
+                            gpool_every=args.gpool_every).to(DEVICE)
         total_params = sum(p.numel() for p in model.parameters())
         print(f"\nFresh CNN model — boardsize={args.boardsize}  filters={args.filters}  "
-              f"residual_blocks={args.num_residual}  params={total_params:,}")
+              f"residual_blocks={args.num_residual}  gpool_every={args.gpool_every}  "
+              f"params={total_params:,}")
 
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     steps_per_epoch = len(loader)
@@ -174,6 +160,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Supervised training on self-play data")
     p.add_argument("--data-dir",     default=DATA_DIR)
     p.add_argument("--cycles",       type=int, default=NUM_CYCLES)
+    p.add_argument("--skip-latest",  type=int, default=0,
+                   help="Exclude the newest N cycle files from training "
+                        "(reserve them for holdout evaluation)")
     p.add_argument("--epochs",       type=int, default=EPOCHS)
     p.add_argument("--batch-size",   type=int, default=BATCH_SIZE)
     p.add_argument("--lr",           type=float, default=LR)
@@ -181,16 +170,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--boardsize",    type=int, default=BOARDSIZE)
     p.add_argument("--filters",      type=int, default=FILTERS)
     p.add_argument("--num-residual", type=int, default=NUM_RESIDUAL)
+    p.add_argument("--gpool-every",  type=int, default=0,
+                   help="Every k-th residual block is a KataGo-style global-"
+                        "pooling block (0 = none, matches legacy checkpoints)")
     p.add_argument("--out",          default=OUT_PATH)
     p.add_argument("--resume",       default=None,
                    help="Path to existing model to resume training from")
-    # ViT options
-    p.add_argument("--vit",          action="store_true",
-                   help="Train a ViTDualNetwork instead of the default CNN")
-    p.add_argument("--embed-dim",    type=int,   default=EMBED_DIM)
-    p.add_argument("--num-heads",    type=int,   default=NUM_HEADS)
-    p.add_argument("--num-layers",   type=int,   default=NUM_LAYERS)
-    p.add_argument("--mlp-ratio",    type=float, default=MLP_RATIO)
     return p.parse_args()
 
 
