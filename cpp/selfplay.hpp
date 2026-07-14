@@ -104,6 +104,21 @@ struct Config {
     int solver_max_total_walls   = 2;
     long long solver_node_limit  = 5'000'000;
     double solver_time_limit_s   = 4.0;
+
+    // In-tree MCTS leaf solving: separate (much cheaper) budget applied
+    // to SIMULATED leaves reached during tree search (as opposed to the
+    // real game state, handled by solver_max_total_walls above). When a
+    // fresh leaf's total walls remaining is <= mcts_solver_max_total_walls,
+    // attempt an exact alpha-beta solve with this tight node/time budget
+    // instead of queuing an NN eval. On success the leaf is cached as a
+    // TERMINAL node with the exact game-theoretic value (same mechanism
+    // as a real win/loss leaf, so repeat visits are free -- no re-solving).
+    // On timeout, falls back to the normal NN-eval leaf path for that
+    // node (no correctness impact, just a wasted attempt bounded by the
+    // budget below). -1 disables in-tree solving entirely.
+    int mcts_solver_max_total_walls  = 0;
+    long long mcts_solver_node_limit = 20'000;
+    double mcts_solver_time_limit_s  = 0.02;
 };
 
 // ---------------------------------------------------------------------------
@@ -420,6 +435,8 @@ public:
         long long games = 0;
         // Solver diagnostics.
         long long solver_calls = 0, solver_timeouts = 0, solver_positions = 0;
+        // In-tree MCTS leaf-solver diagnostics.
+        long long mcts_solver_calls = 0, mcts_solver_timeouts = 0, mcts_solver_hits = 0;
     };
 
     Stats stats() const {
@@ -653,20 +670,43 @@ private:
             // Fresh leaf: terminal check, else queue for NN eval.
             float tv = 0.0f;
             bool terminal = false;
+            bool solved = false;
             if (st.winner() != 0) {
                 tv = -1.0f;               // player to move at leaf just lost
                 terminal = true;
             } else if (st.depth >= cfg_.max_moves) {
                 terminal = true;          // draw
             } else {
-                RepCounter rc{&g.history, &overlay};
-                st.gen_legal(rc, legal);
-                if (legal.empty()) terminal = true;  // draw (no moves)
+                if (cfg_.mcts_solver_max_total_walls >= 0
+                    && st.walls_p1 + st.walls_p2 <= cfg_.mcts_solver_max_total_walls) {
+                    AlphaBetaSolver mcts_solver(cfg_.mcts_solver_node_limit,
+                                                 cfg_.mcts_solver_time_limit_s);
+                    const AlphaBetaResult result = mcts_solver.solve(st, &g.history);
+                    {
+                        std::lock_guard<std::mutex> lk(data_mu_);
+                        ++stats_.mcts_solver_calls;
+                        if (result.timed_out) ++stats_.mcts_solver_timeouts;
+                    }
+                    if (!result.timed_out) {
+                        tv = float(result.value);
+                        terminal = true;
+                        solved = true;
+                    }
+                }
+                if (!terminal) {
+                    RepCounter rc{&g.history, &overlay};
+                    st.gen_legal(rc, legal);
+                    if (legal.empty()) terminal = true;  // draw (no moves)
+                }
             }
             if (terminal) {
                 leaf.flags |= F_TERMINAL;
                 leaf.tvalue = tv;
                 backup(g, path, tv);
+                if (solved) {
+                    std::lock_guard<std::mutex> lk(data_mu_);
+                    ++stats_.mcts_solver_hits;
+                }
                 continue;
             }
 

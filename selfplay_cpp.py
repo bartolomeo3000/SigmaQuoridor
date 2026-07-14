@@ -141,6 +141,19 @@ def main() -> None:
                         "back to normal NN+MCTS play for that game")
     p.add_argument("--solver-time-limit-s", type=float, default=4.0,
                    help="safety cap on solver wall-clock seconds per position")
+    p.add_argument("--mcts-solver-max-total-walls", type=int, default=0,
+                   help="in-tree MCTS leaf solving: when a SIMULATED leaf's "
+                        "walls_p1+walls_p2 drops to <= this, attempt a cheap "
+                        "exact alpha-beta solve instead of an NN eval (cached "
+                        "as a terminal node on success); -1 disables in-tree "
+                        "solving entirely (root-level solver above is unaffected)")
+    p.add_argument("--mcts-solver-node-limit", type=int, default=20_000,
+                   help="safety cap on nodes for in-tree MCTS leaf solves "
+                        "(kept small since this runs per-simulation, not per-move)")
+    p.add_argument("--mcts-solver-time-limit-s", type=float, default=0.02,
+                   help="safety cap on wall-clock seconds for in-tree MCTS leaf "
+                        "solves; a timed-out attempt falls back to a normal NN "
+                        "eval leaf for that node")
     p.add_argument("--no-augment", action="store_true",
                    help="skip left-right flip augmentation")
     p.add_argument("--compile", action="store_true",
@@ -182,6 +195,9 @@ def main() -> None:
         solver_max_total_walls=args.solver_max_total_walls,
         solver_node_limit=args.solver_node_limit,
         solver_time_limit_s=args.solver_time_limit_s,
+        mcts_solver_max_total_walls=args.mcts_solver_max_total_walls,
+        mcts_solver_node_limit=args.mcts_solver_node_limit,
+        mcts_solver_time_limit_s=args.mcts_solver_time_limit_s,
     )
     mgr.start(args.games)
 
@@ -239,6 +255,12 @@ def main() -> None:
     print(f"  plies mean {stats['mean_plies']:.1f} "
           f"(min {stats['min_plies']}, max {stats['max_plies']})  "
           f"walls/game {stats['mean_walls']:.1f}")
+    print(f"  solver: {stats['solver_calls']} calls, "
+          f"{stats['solver_timeouts']} timeouts, "
+          f"{stats['solver_positions']} positions solved")
+    print(f"  mcts leaf-solver: {stats['mcts_solver_calls']} calls, "
+          f"{stats['mcts_solver_timeouts']} timeouts, "
+          f"{stats['mcts_solver_hits']} hits")
     print(f"  positions {len(values)}  evals {n_evals} "
           f"({n_evals / elapsed:.0f}/s, mean batch {n_evals / max(n_batches, 1):.1f})")
 

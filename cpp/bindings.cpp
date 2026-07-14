@@ -202,7 +202,9 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                          double dist_bonus_max, bool training, uint64_t seed,
                          int tt_max_depth, long long tt_max_entries,
                          int solver_max_total_walls, long long solver_node_limit,
-                         double solver_time_limit_s) {
+                         double solver_time_limit_s,
+                         int mcts_solver_max_total_walls, long long mcts_solver_node_limit,
+                         double mcts_solver_time_limit_s) {
                  Config cfg;
                  cfg.boardsize       = boardsize;
                  cfg.walls           = walls;
@@ -229,6 +231,9 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  cfg.solver_max_total_walls = solver_max_total_walls;
                  cfg.solver_node_limit      = solver_node_limit;
                  cfg.solver_time_limit_s    = solver_time_limit_s;
+                 cfg.mcts_solver_max_total_walls = mcts_solver_max_total_walls;
+                 cfg.mcts_solver_node_limit      = mcts_solver_node_limit;
+                 cfg.mcts_solver_time_limit_s    = mcts_solver_time_limit_s;
                  return new SelfPlayManager(cfg, num_threads, parallel_games);
              }),
              py::arg("boardsize") = 7, py::arg("walls") = 5,
@@ -244,7 +249,10 @@ PYBIND11_MODULE(quoridor_cpp, m) {
              py::arg("tt_max_entries") = 2'000'000,
              py::arg("solver_max_total_walls") = 2,
              py::arg("solver_node_limit") = 5'000'000,
-             py::arg("solver_time_limit_s") = 4.0)
+             py::arg("solver_time_limit_s") = 4.0,
+             py::arg("mcts_solver_max_total_walls") = 0,
+             py::arg("mcts_solver_node_limit") = 20'000,
+             py::arg("mcts_solver_time_limit_s") = 0.02)
         .def("start", &SelfPlayManager::start, py::arg("total_games"),
              "Spawn worker threads and begin playing total_games games.")
         .def("stop", &SelfPlayManager::stop)
@@ -351,6 +359,9 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  d["solver_calls"] = s.solver_calls;
                  d["solver_timeouts"] = s.solver_timeouts;
                  d["solver_positions"] = s.solver_positions;
+                 d["mcts_solver_calls"] = s.mcts_solver_calls;
+                 d["mcts_solver_timeouts"] = s.mcts_solver_timeouts;
+                 d["mcts_solver_hits"] = s.mcts_solver_hits;
                  return d;
              });
 
