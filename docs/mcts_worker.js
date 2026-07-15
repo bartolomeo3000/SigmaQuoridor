@@ -23,8 +23,16 @@ const START_MODEL_PATH = (() => {
 try {
   // WASM binaries are fetched from the CDN; credentials are not needed.
   ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
-  // Single-threaded mode: avoids needing SharedArrayBuffer for threaded WASM.
-  ort.env.wasm.numThreads = 1;
+  // Multi-threaded WASM (intra-op parallelism for the conv/matmul work in
+  // each inference call) needs SharedArrayBuffer, which needs cross-origin
+  // isolation — already set up via COOP/COEP (serve.py locally,
+  // coi-serviceworker.js on GitHub Pages), so this is safe to enable. Falls
+  // back to single-threaded automatically if crossOriginIsolated is false
+  // for any reason. Capped rather than using the full core count to avoid
+  // hogging low-end visitor machines.
+  ort.env.wasm.numThreads = self.crossOriginIsolated
+    ? Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8))
+    : 1;
   // We are already inside a Worker — do not proxy back to main thread.
   ort.env.wasm.proxy = false;
 } catch (e) {
