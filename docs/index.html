@@ -121,6 +121,7 @@
       transition: background 0.15s, border-color 0.15s;
     }
     button:hover { background: var(--surface); border-color: var(--muted); }
+    button.toggle-active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
 
     /* ── agent select ── */
     .agent-select {
@@ -144,8 +145,8 @@
 
     /* ── mode selector ── */
     .mode-btn-group { display: flex; gap: 6px; }
-    .mode-btn { flex: 1; padding: 7px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
-    .mode-btn.active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
+    .mode-btn, .board-btn { flex: 1; padding: 7px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
+    .mode-btn.active, .board-btn.active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
 
     /* ── thinking animation ── */
     @keyframes thinking-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
@@ -250,6 +251,14 @@
 
 <div id="sidebar">
   <div class="card">
+    <div class="card-label">Board</div>
+    <div class="mode-btn-group">
+      <button class="board-btn active" data-board="7x7">7&times;7 (5 walls)</button>
+      <button class="board-btn" data-board="9x9">9&times;9 (10 walls)</button>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-label">Players</div>
     <div class="player-entry" id="pe-p1">
       <div class="pawn-dot blue"></div>
@@ -309,6 +318,7 @@
 
   <button id="btn-reset">&#x21BA; New Game</button>
   <button id="btn-undo">&#x21A9; Undo Move</button>
+  <button id="btn-flip">&#x21C5; Flip Board</button>
   <button id="btn-nn">&#x1F9E0; NN Channels</button>
   <button id="btn-analysis">&#x1F4CA; Analysis</button>
 </div>
@@ -382,8 +392,24 @@
 <script src="game.js"></script>
 <script>
 // ── Constants ────────────────────────────────────────────────────────────────
-const DEFAULT_BOARDSIZE = 7;
-const DEFAULT_WALLS     = 5;
+// Board variants: swapping variant changes boardsize/walls, the available
+// model list (7x7 and 9x9 nets are architecturally incompatible — different
+// action-space size — so they're never interchangeable), and whether the
+// (7x7-only, tabular) Simple RL agent is offered.
+const BOARD_VARIANTS = {
+  '7x7': {
+    boardsize: 7, walls: 5,
+    defaultModel: './models/supervised_extended.onnx',
+    simpleRlAvailable: true,
+  },
+  '9x9': {
+    boardsize: 9, walls: 10,
+    defaultModel: './models_9x9/best.onnx',
+    simpleRlAvailable: false,
+  },
+};
+let currentBoardVariant = '7x7';
+function currentVariant() { return BOARD_VARIANTS[currentBoardVariant]; }
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 const CELL   = 62;
@@ -564,8 +590,22 @@ function handleAnalysisWorkerMessage(e) {
 }
 
 // ── Coordinate helpers ────────────────────────────────────────────────────────
+// boardFlipped is a pure DISPLAY preference (never touches game state/logic):
+// when on, row 0 (Player 1's home row) renders at the top instead of the
+// bottom, which is what you want when playing as Player 2 and prefer your
+// own pawn to start at the bottom of the screen. Both helpers below are
+// self-inverse (applying them twice returns the input), so the same
+// function serves as both the forward (game -> screen) and inverse
+// (screen -> game) row mapping.
+let boardFlipped = false;
+function flipRow(gy) {
+  return boardFlipped ? gy : (state.boardsize - 1 - gy);
+}
+function flipWallRow(ay) {
+  return boardFlipped ? ay : (state.boardsize - 2 - ay);
+}
 function cellOrigin(gx, gy) {
-  return { x: gx * STEP, y: (state.boardsize - 1 - gy) * STEP };
+  return { x: gx * STEP, y: flipRow(gy) * STEP };
 }
 function canvasSize() { return state.boardsize * STEP - GAP; }
 
@@ -575,7 +615,7 @@ function pixelToCell(px, py) {
   const localX = px - col * STEP;
   const localY = py - row * STEP;
   if (localX >= CELL || localY >= CELL) return null;
-  const gy = state.boardsize - 1 - row;
+  const gy = flipRow(row);
   if (col < 0 || col >= state.boardsize || gy < 0 || gy >= state.boardsize) return null;
   return { gx: col, gy };
 }
@@ -611,7 +651,7 @@ function pixelToWall(px, py) {
   const gapColIdx = Math.floor((px - CELL) / STEP);
   let hCand = null, vCand = null;
   if (inHGap) {
-    const ay = bs - 2 - gapRowIdx;
+    const ay = flipWallRow(gapRowIdx);
     if (ay >= 0 && ay <= bs - 2) {
       const ax = Math.max(0, Math.min(bs - 2, Math.round((px - CELL - GAP / 2) / STEP)));
       if (px >= ax * STEP && px <= ax * STEP + 2 * CELL + GAP)
@@ -622,8 +662,8 @@ function pixelToWall(px, py) {
     const ax = gapColIdx;
     if (ax >= 0 && ax <= bs - 2) {
       const ay = Math.max(0, Math.min(bs - 2,
-        Math.round((bs - 2) - (py - CELL - GAP / 2) / STEP)));
-      const wallTop = (bs - 2 - ay) * STEP;
+        Math.round(flipWallRow((py - CELL - GAP / 2) / STEP))));
+      const wallTop = flipWallRow(ay) * STEP;
       if (py >= wallTop && py <= wallTop + 2 * CELL + GAP)
         vCand = { ax, ay, orientation: 'v' };
     }
@@ -631,7 +671,7 @@ function pixelToWall(px, py) {
   if (!hCand && !vCand) return null;
   if (hCand && !vCand) return hCand;
   if (!hCand && vCand) return vCand;
-  const hCenterY = (bs - 2 - hCand.ay) * STEP + CELL + GAP / 2;
+  const hCenterY = flipWallRow(hCand.ay) * STEP + CELL + GAP / 2;
   const vCenterX = vCand.ax * STEP + CELL + GAP / 2;
   return Math.abs(px - vCenterX) < Math.abs(py - hCenterY) - GAP / 2 ? vCand : hCand;
 }
@@ -675,7 +715,7 @@ function drawLabels(ctx) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (let gy = 0; gy < bs; gy++) {
-    ctx.fillText(String(gy), LABEL / 2, (bs - 1 - gy) * STEP + CELL / 2);
+    ctx.fillText(String(gy), LABEL / 2, flipRow(gy) * STEP + CELL / 2);
   }
   for (let gx = 0; gx < bs; gx++) {
     ctx.fillText(String(gx), LABEL + gx * STEP + CELL / 2, canvasSize() + LABEL / 2);
@@ -708,9 +748,9 @@ function drawCells(ctx) {
 function drawOneWall(ctx, ax, ay, orientation) {
   const bs = state.boardsize;
   if (orientation === 'h') {
-    rrect(ctx, ax * STEP, (bs - 2 - ay) * STEP + CELL, 2 * CELL + GAP, GAP, 3);
+    rrect(ctx, ax * STEP, flipWallRow(ay) * STEP + CELL, 2 * CELL + GAP, GAP, 3);
   } else {
-    rrect(ctx, ax * STEP + CELL, (bs - 2 - ay) * STEP, GAP, 2 * CELL + GAP, 3);
+    rrect(ctx, ax * STEP + CELL, flipWallRow(ay) * STEP, GAP, 2 * CELL + GAP, 3);
   }
   ctx.fill();
 }
@@ -892,7 +932,10 @@ function postMove(body) {
   applyState(gameState.serialize());
 }
 
-function initGame(boardsize = DEFAULT_BOARDSIZE, walls = DEFAULT_WALLS) {
+function initGame(boardsize, walls) {
+  const v = currentVariant();
+  if (boardsize === undefined) boardsize = v.boardsize;
+  if (walls === undefined) walls = v.walls;
   gameState = new State({ boardsize, walls_p1: walls, walls_p2: walls });
   applyState(gameState.serialize());
 }
@@ -977,7 +1020,7 @@ const SIMPLE_RL_LIST = [
   { id: 'DoubleExpectedSarsaAgent', name: 'Double Expected SARSA',   path: './models/simple_rl/DoubleExpectedSarsaAgent.json' },
 ];
 
-const MODEL_LIST = [
+const MODEL_LIST_7X7 = [
   { label: 'supervised_extended  (latest)', path: './models/supervised_extended.onnx' },
   { label: 'supervised',                    path: './models/supervised.onnx' },
   { label: 'Cycle 141', path: './models/checkpoints/cycle_0141.onnx' },
@@ -997,13 +1040,38 @@ const MODEL_LIST = [
   { label: 'Cycle 1',   path: './models/checkpoints/cycle_0001.onnx' },
 ];
 
+const MODEL_LIST_9X9 = [
+  { label: 'best  (latest)', path: './models_9x9/best.onnx' },
+  { label: 'Cycle 234', path: './models_9x9/checkpoints/cycle_0234.onnx' },
+  { label: 'Cycle 221', path: './models_9x9/checkpoints/cycle_0221.onnx' },
+  { label: 'Cycle 201', path: './models_9x9/checkpoints/cycle_0201.onnx' },
+  { label: 'Cycle 181', path: './models_9x9/checkpoints/cycle_0181.onnx' },
+  { label: 'Cycle 161', path: './models_9x9/checkpoints/cycle_0161.onnx' },
+  { label: 'Cycle 141', path: './models_9x9/checkpoints/cycle_0141.onnx' },
+  { label: 'Cycle 121', path: './models_9x9/checkpoints/cycle_0121.onnx' },
+  { label: 'Cycle 101', path: './models_9x9/checkpoints/cycle_0101.onnx' },
+  { label: 'Cycle 81',  path: './models_9x9/checkpoints/cycle_0081.onnx' },
+  { label: 'Cycle 61',  path: './models_9x9/checkpoints/cycle_0061.onnx' },
+  { label: 'Cycle 41',  path: './models_9x9/checkpoints/cycle_0041.onnx' },
+  { label: 'Cycle 21',  path: './models_9x9/checkpoints/cycle_0021.onnx' },
+];
+
+function currentModelList() {
+  return currentBoardVariant === '9x9' ? MODEL_LIST_9X9 : MODEL_LIST_7X7;
+}
+
 function _buildAgentSelect(selEl, currentId, setId, filter) {
   const list = filter ? _agentList.filter(a => filter.includes(a.id)) : _agentList;
   selEl.innerHTML = '';
   for (const a of list) {
     const opt       = document.createElement('option');
     opt.value       = a.id;
-    const suffix    = a.available ? '' : (_nnLoadFailed ? ' (unavailable)' : ' (loading…)');
+    // 'alphazero' availability tracks async ONNX model loading (loading… vs
+    // failed); every other unavailable agent is unavailable for a static
+    // reason (e.g. Simple RL has no 9x9 tabular tables) — always say so.
+    const suffix    = a.available ? ''
+      : a.id !== 'alphazero' ? ' (unavailable)'
+      : (_nnLoadFailed ? ' (unavailable)' : ' (loading…)');
     opt.textContent = a.name + suffix;
     opt.disabled    = !a.available;
     if (a.id === currentId) opt.selected = true;
@@ -1032,7 +1100,9 @@ function _buildAnalysisAgentSelect() {
 function initAgentList() {
   _agentList = AGENT_DEFS.map(a => ({
     ...a,
-    available: a.id !== 'alphazero' || _nnAvailable,
+    available: a.id === 'alphazero' ? _nnAvailable
+             : a.id === 'simple_rl' ? currentVariant().simpleRlAvailable
+             : true,
   }));
   _buildAgentSelect(
     document.getElementById('agent-select'),
@@ -1062,7 +1132,7 @@ function buildModelSelect() {
   const sel = document.getElementById('model-select');
   sel.innerHTML = '';
   sel.disabled = _modelLoading;
-  for (const m of MODEL_LIST) {
+  for (const m of currentModelList()) {
     const opt = document.createElement('option');
     opt.value = m.path;
     opt.textContent = (_modelLoading && m.path === activeModelPath)
@@ -1077,7 +1147,7 @@ function buildAnalysisModelSelect() {
   const sel = document.getElementById('analysis-model-select');
   sel.innerHTML = '';
   sel.disabled = _analysisModelLoading;
-  for (const m of MODEL_LIST) {
+  for (const m of currentModelList()) {
     const opt = document.createElement('option');
     opt.value = m.path;
     opt.textContent = (_analysisModelLoading && m.path === analysisModelPath)
@@ -1367,12 +1437,69 @@ function runMctsAnalysis() {
   });
 }
 
+// ── Board variant switching ──────────────────────────────────────────────────
+// 7x7 and 9x9 nets are architecturally incompatible (different action-space
+// size), so switching variant always: starts a fresh game at the new
+// boardsize/walls, swaps both play + analysis ONNX sessions to the new
+// variant's default model (via the existing generic 'load_model' worker
+// message — no need to recreate the workers themselves), and disables the
+// (7x7-only, tabular) Simple RL agent when on 9x9.
+function switchBoardVariant(id) {
+  if (id === currentBoardVariant || !BOARD_VARIANTS[id]) return;
+  currentBoardVariant = id;
+  const v = currentVariant();
+
+  document.querySelectorAll('.board-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.board === id));
+
+  // Cancel any in-flight play search / analysis work.
+  _searchGen++;
+  agentThinking = false;
+  _analysisGen++;
+  _analysisMctsRunning = false;
+  const mctsBtn = document.getElementById('btn-run-mcts');
+  mctsBtn.classList.remove('running');
+  mctsBtn.textContent = '\u25B6 Run MCTS Analysis';
+  _analysisMctsData = null;
+  _analysisNnData = null;
+
+  // Swap both models to the new variant's default net.
+  activeModelPath   = v.defaultModel;
+  analysisModelPath = v.defaultModel;
+  _nnAvailable = false;
+  _nnLoadFailed = false;
+  _modelLoading = true;
+  _analysisNnAvailable = false;
+  _analysisNnLoadFailed = false;
+  _analysisModelLoading = true;
+  _agentManuallyChanged = false;
+  _analysisAgentManuallyChanged = false;
+  if (selectedAgentId === 'simple_rl' && !v.simpleRlAvailable) selectedAgentId = 'alphazero';
+  if (analysisAgentId === 'simple_rl' && !v.simpleRlAvailable) analysisAgentId = 'alphazero';
+
+  getWorker().postMessage({ type: 'load_model', path: activeModelPath });
+  getAnalysisWorker().postMessage({ type: 'load_model', path: analysisModelPath });
+
+  initAgentList();
+  resetGame();
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 const canvas = document.getElementById('board');
 setupInput(canvas);
 
+document.querySelectorAll('.board-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchBoardVariant(btn.dataset.board));
+});
+
 document.getElementById('btn-reset').addEventListener('click', resetGame);
 document.getElementById('btn-undo').addEventListener('click', undoMove);
+document.getElementById('btn-flip').addEventListener('click', () => {
+  boardFlipped = !boardFlipped;
+  document.getElementById('btn-flip').classList.toggle('toggle-active', boardFlipped);
+  hoverWall = null;
+  if (state) draw(document.getElementById('board').getContext('2d'));
+});
 document.getElementById('btn-nn').addEventListener('click', () => {
   const panel = document.getElementById('nn-panel');
   if (panel.classList.contains('open')) panel.classList.remove('open');
