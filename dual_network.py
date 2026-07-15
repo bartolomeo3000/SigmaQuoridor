@@ -55,7 +55,11 @@ from game import State, Action, action_to_index, action_space_size
 # Device
 # ---------------------------------------------------------------------------
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else
+    "mps" if torch.backends.mps.is_available() else
+    "cpu"
+)
 
 # ---------------------------------------------------------------------------
 # Building blocks
@@ -80,6 +84,48 @@ class ResidualBlock(nn.Module):
         return F.relu(x + sc)
 
 
+class GPoolResidualBlock(nn.Module):
+    """KataGo-style residual block with a global-pooling side branch.
+
+    conv1 produces ``c_reg + c_pool`` channels. The ``c_pool`` "pooling"
+    channels are reduced to per-channel global statistics (mean and max over
+    the board) and mapped by a linear layer to a per-channel bias that is
+    added to the ``c_reg`` regular channels — giving every spatial position
+    immediate access to global context (wall budgets, overall race state)
+    without waiting for it to diffuse through many 3x3 conv layers.
+    See "Accelerating Self-Play Learning in Go" (KataGo), sec. 4.1.
+    """
+
+    def __init__(self, filters: int, gpool_channels: int | None = None) -> None:
+        super().__init__()
+        c_pool = gpool_channels if gpool_channels is not None else max(8, filters // 4)
+        c_reg  = filters - c_pool
+        if c_reg <= 0:
+            raise ValueError(f"gpool_channels={c_pool} must be < filters={filters}")
+        self.c_reg, self.c_pool = c_reg, c_pool
+
+        self.conv1     = nn.Conv2d(filters, c_reg + c_pool, 3, padding=1, bias=False)
+        self.bn1_reg   = nn.BatchNorm2d(c_reg)
+        self.bn1_pool  = nn.BatchNorm2d(c_pool)
+        self.gpool_fc  = nn.Linear(2 * c_pool, c_reg)
+        self.conv2     = nn.Conv2d(c_reg, filters, 3, padding=1, bias=False)
+        self.bn2       = nn.BatchNorm2d(filters)
+        nn.init.kaiming_normal_(self.conv1.weight, nonlinearity="relu")
+        nn.init.kaiming_normal_(self.conv2.weight, nonlinearity="relu")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        sc = x
+        y  = self.conv1(x)
+        r  = self.bn1_reg(y[:, : self.c_reg])
+        p  = F.relu(self.bn1_pool(y[:, self.c_reg :]))          # (B, c_pool, N, N)
+        pooled = torch.cat([p.mean(dim=(2, 3)),
+                            p.amax(dim=(2, 3))], dim=1)          # (B, 2*c_pool)
+        bias   = self.gpool_fc(pooled)                           # (B, c_reg)
+        r  = F.relu(r + bias[:, :, None, None])
+        y  = self.bn2(self.conv2(r))
+        return F.relu(y + sc)
+
+
 # ---------------------------------------------------------------------------
 # Dual network
 # ---------------------------------------------------------------------------
@@ -95,6 +141,11 @@ class DualNetwork(nn.Module):
     boardsize    : int   side length of the board (7 or 9)
     filters      : int   number of convolutional channels throughout the trunk
     num_residual : int   number of residual blocks in the trunk
+    gpool_every  : int   if > 0, every gpool_every-th residual block (1-based:
+                         blocks gpool_every-1, 2*gpool_every-1, ...) is a
+                         KataGo-style GPoolResidualBlock instead of a plain
+                         ResidualBlock. 0 disables (default, matches all
+                         pre-existing checkpoints).
     """
 
     IN_CHANNELS = 8  # channels produced by State.to_nn_input()
@@ -104,11 +155,13 @@ class DualNetwork(nn.Module):
         boardsize:    int = 7,
         filters:      int = 64,
         num_residual: int = 6,
+        gpool_every:  int = 0,
     ) -> None:
         super().__init__()
         self.boardsize    = boardsize
         self.filters      = filters
         self.num_residual = num_residual
+        self.gpool_every  = gpool_every
         N = boardsize
         W = N - 1   # wall-anchor grid side length
 
@@ -116,9 +169,12 @@ class DualNetwork(nn.Module):
         self.conv = nn.Conv2d(self.IN_CHANNELS, filters, 3, padding=1, bias=False)
         self.bn   = nn.BatchNorm2d(filters)
         nn.init.kaiming_normal_(self.conv.weight, nonlinearity="relu")
-        self.residuals = nn.Sequential(
-            *[ResidualBlock(filters) for _ in range(num_residual)]
-        )
+        self.residuals = nn.Sequential(*[
+            GPoolResidualBlock(filters)
+            if gpool_every > 0 and (i + 1) % gpool_every == 0
+            else ResidualBlock(filters)
+            for i in range(num_residual)
+        ])
 
         # ── Policy head ──────────────────────────────────────────────────────
         # Pawn sub-head: global avg-pool preserves no spatial info (correct —
@@ -302,16 +358,19 @@ def save_model(model: DualNetwork, path: str) -> None:
     os.replace(tmp, path)
 
 
-def _infer_arch(state_dict: dict) -> tuple[int, int, int]:
+def _infer_arch(state_dict: dict) -> tuple[int, int, int, int]:
     """
-    Infer (filters, num_residual, boardsize) from a saved state dict so that
-    checkpoints can be loaded without knowing the architecture upfront.
+    Infer (filters, num_residual, boardsize, gpool_every) from a saved state
+    dict so that checkpoints can be loaded without knowing the architecture
+    upfront.
 
     Derivations
     -----------
     * filters      — output channels of the first conv layer
     * num_residual — number of ResidualBlock entries in 'residuals.*'
     * boardsize    — value_fc1 maps N² → 64, so boardsize = sqrt(in_features)
+    * gpool_every  — position of the first block with a 'gpool_fc' key (+1);
+                     0 when no gpool blocks are present
     """
     filters = state_dict["conv.weight"].shape[0]
     num_residual = sum(
@@ -319,60 +378,31 @@ def _infer_arch(state_dict: dict) -> tuple[int, int, int]:
         if k.startswith("residuals.") and k.endswith(".conv1.weight")
     )
     boardsize = int(math.sqrt(state_dict["value_fc1.weight"].shape[1]))
-    return filters, num_residual, boardsize
+    gpool_idx = [
+        int(k.split(".")[1]) for k in state_dict
+        if k.startswith("residuals.") and k.endswith(".gpool_fc.weight")
+    ]
+    gpool_every = (min(gpool_idx) + 1) if gpool_idx else 0
+    return filters, num_residual, boardsize, gpool_every
 
 
-def _infer_vit_arch(state_dict: dict) -> tuple[int, int, int, int, float]:
+def load_model(path: str, device: torch.device | None = None) -> DualNetwork:
     """
-    Infer (embed_dim, num_layers, boardsize, num_heads, mlp_ratio) from a
-    saved ViTDualNetwork state dict.
-
-    Derivations
-    -----------
-    * embed_dim  — output features of the patch embedding linear layer
-    * num_layers — number of TransformerEncoderLayer blocks
-    * boardsize  — pos_embed has shape (1, 1 + N², E), so N = sqrt(seq - 1)
-    * num_heads  — stored explicitly in the ``_num_heads_buf`` buffer
-    * mlp_ratio  — FFN hidden dim / embed_dim
-    """
-    embed_dim  = state_dict["patch_embed.weight"].shape[0]
-    num_layers = sum(
-        1 for k in state_dict
-        if k.startswith("transformer.layers.") and k.endswith(".self_attn.in_proj_weight")
-    )
-    boardsize  = int(math.sqrt(state_dict["pos_embed"].shape[1] - 1))
-    num_heads  = int(state_dict["_num_heads_buf"])
-    ff_dim     = state_dict["transformer.layers.0.linear1.weight"].shape[0]
-    mlp_ratio  = ff_dim / embed_dim
-    return embed_dim, num_layers, boardsize, num_heads, mlp_ratio
-
-
-def load_model(path: str, device: torch.device | None = None) -> DualNetwork | ViTDualNetwork:
-    """
-    Load a checkpoint from *path*.  Architecture (CNN or ViT) and all
-    hyper-parameters are inferred automatically from the saved weight shapes.
+    Load a checkpoint from *path*.  All architecture hyper-parameters are
+    inferred automatically from the saved weight shapes.
     """
     dev = device or DEVICE
     sd  = torch.load(path, map_location=dev, weights_only=True)
     # Training checkpoints wrap the model state under "model_state"
     if "model_state" in sd:
         sd = sd["model_state"]
-    if "patch_embed.weight" in sd:
-        embed_dim, num_layers, boardsize, num_heads, mlp_ratio = _infer_vit_arch(sd)
-        model: DualNetwork | ViTDualNetwork = ViTDualNetwork(
-            boardsize  = boardsize,
-            embed_dim  = embed_dim,
-            num_heads  = num_heads,
-            num_layers = num_layers,
-            mlp_ratio  = mlp_ratio,
-        ).to(dev)
-    else:
-        filters, num_residual, boardsize = _infer_arch(sd)
-        model = DualNetwork(
-            boardsize    = boardsize,
-            filters      = filters,
-            num_residual = num_residual,
-        ).to(dev)
+    filters, num_residual, boardsize, gpool_every = _infer_arch(sd)
+    model = DualNetwork(
+        boardsize    = boardsize,
+        filters      = filters,
+        num_residual = num_residual,
+        gpool_every  = gpool_every,
+    ).to(dev)
     model.load_state_dict(sd)
     return model
 
@@ -422,7 +452,7 @@ if __name__ == "__main__":
     N = 7
     print(f"Device: {DEVICE}")
 
-    def _test_model(model: DualNetwork | ViTDualNetwork, label: str) -> None:
+    def _test_model(model: DualNetwork, label: str) -> None:
         model = model.to(DEVICE)
         total = sum(p.numel() for p in model.parameters())
         print(f"\n[{label}]  Parameters: {total:,}")

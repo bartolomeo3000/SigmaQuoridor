@@ -1,0 +1,3 @@
+game,agent_a,agent_b,player1,player2,result,score_for_a
+1,models_7x7\checkpoints\cycle_0162.pt,models_7x7\checkpoints\cycle_0152.pt,models_7x7\checkpoints\cycle_0162.pt,models_7x7\checkpoints\cycle_0152.pt,p1_win,1.0
+2,models_7x7\checkpoints\cycle_0162.pt,models_7x7\checkpoints\cycle_0152.pt,models_7x7\checkpoints\cycle_0152.pt,models_7x7\checkpoints\cycle_0162.pt,p1_win,0.0

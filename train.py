@@ -40,6 +40,7 @@ import csv
 import multiprocessing
 import os
 import random
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -61,11 +62,11 @@ from mcts import MCTSAgent
 # Override any of these via CLI flags (see parse_args()).
 
 # Board
-BOARDSIZE        = 7
-WALLS_PER_PLAYER = 5
+BOARDSIZE        = 9
+WALLS_PER_PLAYER = 10
 
 # Self-play
-GAMES_PER_CYCLE   = 200     # self-play games played per cycle
+GAMES_PER_CYCLE   = 2048    # self-play games played per cycle
 MCTS_SIMS         = 800   # MCTS simulations per move during self-play
 NUM_WORKERS       = os.cpu_count() or 1  # parallel self-play processes
 C_PUCT            = 1.0
@@ -73,7 +74,17 @@ DIRICHLET_ALPHA   = 0.3
 DIRICHLET_EPSILON = 0.25
 DIST_BONUS_WEIGHT_MAX = 0.5  # each game samples w1, w2 ~ Uniform[0, MAX] independently per side
 FPU_REDUCTION     = 0.1    # First Play Urgency: unvisited child Q estimate = parent_Q - FPU
-TEMP_THRESHOLD    = 14     # plies ≤ this use τ=1.0 (exploration); > uses τ=0.0
+# Move-selection temperature schedule (KataGo-style): decays exponentially
+# from TEMP_EARLY at ply 0 toward TEMP_FINAL with halflife TEMP_HALFLIFE
+# plies. A small nonzero TEMP_FINAL keeps trajectories diverging for the
+# whole game (fixes the hard-argmax lock-in effect; see docs). Moves with
+# <= TEMP_PRUNE_VISITS visits are never sampled (argmax always eligible).
+# Must be kept in sync with cpp/selfplay.hpp / cpp/bindings.cpp /
+# selfplay_cpp.py defaults.
+TEMP_EARLY        = 0.8
+TEMP_FINAL        = 0.15
+TEMP_HALFLIFE     = 6.0
+TEMP_PRUNE_VISITS = 4
 FAST_PLAY_PROB      = 0.0  # fraction of moves that use fast MCTS; remainder use full search
 MCTS_SIMS_FAST      = 128   # simulations for fast plies (2 NN batches); not saved unless surprising
 FAST_KL_THRESHOLD   = 0.7   # KL(visit_dist ∥ prior) nats — fast positions above this are saved
@@ -87,31 +98,40 @@ RANDOM_WALL_PLIES = 1      # walls placed per player in pre-filled games
 RANDOM_WALL_FRACTION = 0.05  # fraction of games to apply random wall pre-fill to
 
 # Replay buffer
-BUFFER_CYCLES = 40         # keep positions from this many recent cycles
+BUFFER_CYCLES = 30         # keep positions from this many recent cycles
 
 # Training
-BATCH_SIZE                 = 256
-TRAIN_POSITIONS_PER_CYCLE  = 512_000  # gradient updates = this // BATCH_SIZE per cycle
-BUFFER_RECENCY_DECAY       = 0.96     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
+BATCH_SIZE                 = 1024   # was 256; GPU has headroom, and BatchNorm/value-target
+                                    # noise both benefit from the larger batch (see
+                                    # docs/cpp_selfplay_notes.md for the LR sweep this was
+                                    # paired with -- LR was scaled ~sqrt(4x) alongside this)
+TRAIN_POSITIONS_PER_CYCLE  = 1_024_000  # gradient updates = this // BATCH_SIZE per cycle
+BUFFER_RECENCY_DECAY       = 0.92     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
 MIN_BUFFER_SIZE            = BATCH_SIZE
 
 # Optimizer
-LEARNING_RATE     = 1e-4
+LEARNING_RATE     = 3e-4  # was 1e-4 at batch 256; sqrt-scaled for the 4x batch increase
+                          # (Adam heuristic -- see chat history). Not yet empirically swept;
+                          # a quick supervised_train.py LR sweep on data_9x9 is a sensible
+                          # next step before trusting this in the live RL loop.
 WEIGHT_DECAY      = 1e-4
 VALUE_LOSS_WEIGHT = 1.0         # multiply value MSE loss (KataGo uses ~1.5)
 LR_MILESTONES  = [800, 1600]    # cycle numbers at which to multiply LR by LR_DECAY
 LR_DECAY       = 0.1
 
 # Network
-FILTERS      = 64
-NUM_RESIDUAL = 6
+FILTERS      = 128
+NUM_RESIDUAL = 10
+GPOOL_EVERY  = 3   # every k-th residual block is a KataGo-style global-pooling
+                   # block (0 = none); see dual_network.GPoolResidualBlock
 
 # Evaluation
-EVAL_EVERY = 5    # run evaluation every N cycles; 0 = never
+EVAL_EVERY = 0    # run evaluation every N cycles; 0 = never
 EVAL_SIMS  = 800   # MCTS simulations for the challenger during evaluation
 
 # Holdout validation (fixed set sampled once from a previous run's data)
-HOLDOUT_DIR    = "data_7x7"   # source directory for holdout positions
+ENABLE_HOLDOUT_EVAL = False   # holdout loss is slow (HOLDOUT_SIZE positions/cycle); off by default
+HOLDOUT_DIR    = "data_9x9"   # source directory for holdout positions
 HOLDOUT_CYCLES = 10            # how many most-recent cycles to draw from
 HOLDOUT_SIZE   = 4096*100         # positions to evaluate per cycle (fixed sample)
 
@@ -121,24 +141,27 @@ HOLDOUT_SIZE   = 4096*100         # positions to evaluate per cycle (fixed sampl
 #        {"type": "minimax", "depth": int}
 # num_games is split: ceil(n/2) games as P1, floor(n/2) games as P2.
 EVAL_OPPONENTS: list[tuple[str, int, dict]] = [
-    ("random",          10, {"type": "random"}),
+    ("random",          2, {"type": "random"}),
     ("greedy",          2, {"type": "greedy"}),
-    ("old-best   1s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":   1}),
-    ("old-best  50s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":  50}),
-    ("old-best 100s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 100}),
-    ("old-best 200s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 200}),
-    ("old-best 400s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 400}),
-    ("old-best 800s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 800}),
+    # Disabled: models_7x7/best.pt is now the same file MODEL_DIR trains and
+    # overwrites every cycle, so these would compare the model against itself.
+    # ("old-best   1s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":   1}),
+    # ("old-best  50s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":  50}),
+    # ("old-best 100s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 100}),
+    # ("old-best 200s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 200}),
+    # ("old-best 400s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 400}),
+    # ("old-best 800s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 800}),
     ("minimax d2",       2, {"type": "minimax", "depth": 2}),
     ("minimax d3",       2, {"type": "minimax", "depth": 3}),
     # ("minimax d4",       2, {"type": "minimax", "depth": 4}),
 ]
 
 # Paths
-MODEL_DIR      = "models_7x7_v2"                            # model checkpoints and best.pt weights
+MODEL_DIR      = "models_9x9"                               # model checkpoints and best.pt weights
 MODEL_PATH     = os.path.join(MODEL_DIR, "best.pt")         # inference weights only
+LOG_DIR        = "logs"                                     # per-run console transcripts
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")     # full training state
-DATA_DIR       = "data_7x7_v2"                              # persisted self-play cycles
+DATA_DIR       = "data_9x9"                                  # persisted self-play cycles
 
 # Run
 NUM_CYCLES        = 100
@@ -149,22 +172,61 @@ CHECKPOINT_EVERY  = 1   # save a full checkpoint every N cycles
 
 class ReplayBuffer:
     """
-    Stores positions from the last ``maxcycles`` self-play cycles.
+    Stores positions from the last ``maxcycles`` self-play cycles in a
+    single pre-allocated, growable buffer.
 
-    Each cycle is stored as three pre-stacked numpy arrays so that
-    concatenating the full buffer is a single ``np.concatenate`` call.
+    Rationale (memory): the previous implementation stored each cycle as a
+    separate array and rebuilt a full concatenated copy on every call to
+    ``as_arrays()`` (i.e. every training phase / cycle). That meant the
+    *entire* buffer was resident twice simultaneously during each rebuild
+    (originals + fresh concatenation) — a ~2x transient memory spike on top
+    of an already-large steady-state footprint, which is what made buffers
+    beyond ~20 cycles fail to fit in RAM and start swapping. This version
+    keeps ONE persistent buffer: new cycles are appended in place (growing
+    the underlying array only when actually needed, amortized), oldest
+    cycles are evicted by shifting the remaining valid region down to index
+    0 (an in-place overlapping slice assignment — safe and memmove-like in
+    NumPy), and ``as_arrays()`` returns zero-copy VIEWS into the live
+    buffer instead of a fresh copy.
+
+    Also stores ``states``/``policies`` as float16 (state is by far the
+    largest per-position array) to roughly halve memory further; values
+    stay float32 (already negligible size). Callers must upcast the
+    sampled mini-batch back to float32 before feeding the network.
 
     Per-position arrays
     -------------------
-    state  : (8, N, N) float32  — ``State.to_nn_input()`` output
-    policy : (A,)      float32  — full action-space MCTS visit distribution;
-                                  0.0 for illegal actions
+    state  : (8, N, N) float16  — ``State.to_nn_input()`` output, downcast
+    policy : (A,)      float16  — full action-space MCTS visit distribution;
+                                  0.0 for illegal actions, downcast
     value  : float32            — game outcome from the current player's POV
                                   (+1 win, -1 loss, 0 draw)
     """
 
+    _GROWTH_FACTOR = 1.5   # amortized-doubling-style growth when capacity is exceeded
+
     def __init__(self, maxcycles: int) -> None:
-        self._cycles: deque[dict] = deque(maxlen=maxcycles)
+        self._maxcycles = maxcycles
+        self._cycle_lens: deque[int] = deque()
+        self._end      = 0        # number of valid positions (index of first free slot)
+        self._capacity  = 0        # allocated capacity (>= self._end)
+        self._states:   np.ndarray | None = None   # (capacity, 8, N, N) float16
+        self._policies: np.ndarray | None = None   # (capacity, A)       float16
+        self._values:   np.ndarray | None = None   # (capacity,)         float32
+
+    def _ensure_capacity(self, extra: int) -> None:
+        need = self._end + extra
+        if self._capacity >= need:
+            return
+        new_capacity = max(need, int(self._capacity * self._GROWTH_FACTOR))
+        for attr, dtype in (("_states", np.float16), ("_policies", np.float16),
+                           ("_values", np.float32)):
+            old = getattr(self, attr)
+            new_shape = (new_capacity,) + old.shape[1:]
+            new_arr = np.empty(new_shape, dtype=dtype)
+            new_arr[: self._end] = old[: self._end]
+            setattr(self, attr, new_arr)
+        self._capacity = new_capacity
 
     def add_cycle(
         self,
@@ -172,20 +234,42 @@ class ReplayBuffer:
         policies: np.ndarray,   # (M, A)
         values:   np.ndarray,   # (M,)
     ) -> None:
-        self._cycles.append({"states": states, "policies": policies, "values": values})
+        n = states.shape[0]
+        if self._states is None:
+            # First-ever cycle: allocate zero-length arrays with the right
+            # trailing shape so _ensure_capacity's np.empty(new_shape,...)
+            # below has something to match.
+            self._states   = np.empty((0,) + states.shape[1:],   dtype=np.float16)
+            self._policies = np.empty((0,) + policies.shape[1:], dtype=np.float16)
+            self._values   = np.empty((0,),                      dtype=np.float32)
+
+        # Evict oldest cycle(s) if already at the cycle-count limit, by
+        # shifting the remaining valid region down to index 0 in place
+        # (no extra allocation — safe overlapping slice assignment).
+        while len(self._cycle_lens) >= self._maxcycles and self._cycle_lens:
+            evict = self._cycle_lens.popleft()
+            remaining = self._end - evict
+            self._states[:remaining]   = self._states[evict:self._end]
+            self._policies[:remaining] = self._policies[evict:self._end]
+            self._values[:remaining]   = self._values[evict:self._end]
+            self._end = remaining
+
+        self._ensure_capacity(n)
+        self._states[self._end:self._end + n]   = states.astype(np.float16, copy=False)
+        self._policies[self._end:self._end + n] = policies.astype(np.float16, copy=False)
+        self._values[self._end:self._end + n]   = values.astype(np.float32, copy=False)
+        self._end += n
+        self._cycle_lens.append(n)
 
     def size(self) -> int:
-        return sum(c["states"].shape[0] for c in self._cycles)
+        return self._end
 
     def num_cycles(self) -> int:
-        return len(self._cycles)
+        return len(self._cycle_lens)
 
     def as_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Concatenate all cycles into three flat arrays for batch sampling."""
-        states   = np.concatenate([c["states"]   for c in self._cycles])
-        policies = np.concatenate([c["policies"] for c in self._cycles])
-        values   = np.concatenate([c["values"]   for c in self._cycles])
-        return states, policies, values
+        """Zero-copy views into the live buffer (valid until the next add_cycle())."""
+        return self._states[:self._end], self._policies[:self._end], self._values[:self._end]
 
     def sampling_weights(self, recency_decay: float = 0.9) -> np.ndarray:
         """
@@ -198,14 +282,15 @@ class ReplayBuffer:
 
         ``recency_decay = 1.0`` reproduces uniform sampling.
         """
-        n = len(self._cycles)
-        weights: list[np.ndarray] = []
-        for i, cycle in enumerate(self._cycles):
-            w = recency_decay ** (n - 1 - i)
-            weights.append(np.full(cycle["states"].shape[0], w, dtype=np.float64))
-        flat = np.concatenate(weights)
-        flat /= flat.sum()
-        return flat
+        n = len(self._cycle_lens)
+        weights = np.empty(self._end, dtype=np.float64)
+        offset = 0
+        for i, clen in enumerate(self._cycle_lens):
+            weights[offset: offset + clen] = recency_decay ** (n - 1 - i)
+            offset += clen
+        weights /= weights.sum()
+        return weights
+
 
 
 # ── Self-play ────────────────────────────────────────────────────────────────
@@ -226,12 +311,16 @@ def _place_random_walls(state: State, walls_per_player: int) -> State:
     return state
 
 
+def selection_temperature(depth: int) -> float:
+    """KataGo-style decaying selection temperature at a given game depth."""
+    return TEMP_FINAL + (TEMP_EARLY - TEMP_FINAL) * 0.5 ** (depth / TEMP_HALFLIFE)
+
+
 def self_play_game(
     agent1:         MCTSAgent,
     agent2:         MCTSAgent,
     boardsize:      int,
     walls:          int,
-    temp_threshold: int,
     fast_play_prob: float = FAST_PLAY_PROB,
 ) -> tuple[list[tuple[np.ndarray, np.ndarray, np.float32]], int]:
     """
@@ -239,10 +328,11 @@ def self_play_game(
 
     Temperature schedule
     --------------------
-    Plies ≤ temp_threshold : τ=1.0 — sample proportionally from visit counts
-                             (encourages diverse exploration in the opening).
-    Plies  > temp_threshold : τ=0.0 — deterministic argmax (sharpens endgame
-                             play and produces cleaner value targets).
+    Selection temperature decays exponentially with depth from TEMP_EARLY
+    to TEMP_FINAL (halflife TEMP_HALFLIFE plies); moves are sampled with
+    probability proportional to visits^(1/τ), with moves at
+    <= TEMP_PRUNE_VISITS visits excluded from sampling. The recorded policy
+    TARGET is always the raw visit distribution regardless of τ.
 
     Playout cap randomization
     -------------------------
@@ -280,7 +370,7 @@ def self_play_game(
 
     while not state.is_finished():
         agent = agent1 if state.is_player1_turn() else agent2
-        agent.temperature = 1.0 if state.depth < temp_threshold else 0.0
+        agent.temperature = selection_temperature(state.depth)
 
         if fast_play_prob > 0.0 and random.random() < fast_play_prob:
             # ── Fast ply: reduced MCTS (MCTS_SIMS_FAST sims) ─────────────
@@ -307,17 +397,13 @@ def self_play_game(
                         kl += q * math.log(q / p)
 
             if kl > FAST_KL_THRESHOLD:
-                counts = [c.visit_count for c in children]
-                if agent.temperature == 0.0:
-                    best  = counts.index(max(counts))
-                    probs = [1.0 if i == best else 0.0 for i in range(len(children))]
-                else:
-                    inv_t = 1.0 / agent.temperature
-                    raw   = [c ** inv_t for c in counts]
-                    total = sum(raw)
-                    probs = [r / total for r in raw] if total > 0 else [1.0 / len(raw)] * len(raw)
+                # Training target: raw visit distribution (same convention as
+                # full plies — temperature affects selection only).
+                counts_t = np.array([c.visit_count for c in children], dtype=np.float64)
+                tot = counts_t.sum()
+                target = counts_t / tot if tot > 0 else np.full(len(children), 1.0 / len(children))
                 policy_vec = np.zeros(A, dtype=np.float32)
-                for child, prob in zip(children, probs):
+                for child, prob in zip(children, target):
                     policy_vec[action_to_index(child.action, boardsize)] = prob
                 history.append((
                     state.to_nn_input(),
@@ -340,14 +426,22 @@ def self_play_game(
 
         else:
             # ── Full ply: normal MCTS search ──────────────────────────────
-            # Run MCTS.  get_policy() calls search() once and returns a
-            # (sorted) list of (Action, probability) pairs.
-            mcts_policy = agent.get_policy(state)
+            # Run MCTS once; derive BOTH the training target and the move
+            # selection from the root's visit counts.
+            root     = agent.search(state)
+            children = root.children
+            counts   = np.array([c.visit_count for c in children], dtype=np.float64)
+            total    = counts.sum()
+
+            # Training target: RAW visit distribution at every ply
+            # (LC0/KataGo convention) — temperature only affects move
+            # selection, never the recorded target.
+            target = counts / total if total > 0 else np.full(len(children), 1.0 / len(children))
 
             # Build a full-size policy vector (zeros at illegal action indices).
             policy_vec = np.zeros(A, dtype=np.float32)
-            for action, prob in mcts_policy:
-                policy_vec[action_to_index(action, boardsize)] = prob
+            for child, prob in zip(children, target):
+                policy_vec[action_to_index(child.action, boardsize)] = prob
 
             history.append((
                 state.to_nn_input(),         # (8, N, N) float32
@@ -355,12 +449,15 @@ def self_play_game(
                 state.get_current_player(),  # 1 or 2
             ))
 
-            # Sample the next action from the MCTS distribution.
-            actions = [a for a, _ in mcts_policy]
-            probs   = np.array([p for _, p in mcts_policy], dtype=np.float64)
-            probs  /= probs.sum()       # re-normalise to guard against float error
-            chosen  = int(np.random.choice(len(actions), p=probs))
-            state   = state.next(actions[chosen])
+            # Move selection: temperature-applied.
+            if agent.temperature == 0.0:
+                chosen = int(np.argmax(counts))
+            else:
+                inv_t = 1.0 / agent.temperature
+                raw   = counts ** inv_t
+                raw  /= raw.sum()
+                chosen = int(np.random.choice(len(children), p=raw))
+            state = state.next(children[chosen].action)
 
     # Retroactively assign value targets; store original AND mirror each position.
     winner       = state.winner()
@@ -481,8 +578,8 @@ def _worker_play_game(args: tuple):
     left free for the training phase in the main process.
     """
     (
-        weights, boardsize, filters, num_residual,
-        walls, num_sims, temp_threshold,
+        weights, boardsize, filters, num_residual, gpool_every,
+        walls, num_sims,
         c_puct, dirichlet_alpha, dirichlet_epsilon,
         dist_bonus_weight_max, n_workers,
     ) = args
@@ -494,7 +591,8 @@ def _worker_play_game(args: tuple):
     torch.set_num_threads(n_threads)
 
     device = torch.device("cpu")
-    model = DualNetwork(boardsize=boardsize, filters=filters, num_residual=num_residual)
+    model = DualNetwork(boardsize=boardsize, filters=filters, num_residual=num_residual,
+                        gpool_every=gpool_every)
     model.load_state_dict(weights)
     model.to(device)
     model.eval()
@@ -518,7 +616,7 @@ def _worker_play_game(args: tuple):
         )
     agent1 = _make_agent(w1)
     agent2 = _make_agent(w2)
-    return self_play_game(agent1, agent2, boardsize, walls, temp_threshold, FAST_PLAY_PROB)
+    return self_play_game(agent1, agent2, boardsize, walls, FAST_PLAY_PROB)
 
 
 def collect_cycle_data(
@@ -527,7 +625,6 @@ def collect_cycle_data(
     boardsize:         int,
     walls:             int,
     num_sims:          int,
-    temp_threshold:    int,
     c_puct:            float,
     dirichlet_alpha:   float,
     dirichlet_epsilon: float,
@@ -550,8 +647,8 @@ def collect_cycle_data(
     n_workers = num_workers if num_workers > 0 else NUM_WORKERS
     task_args = [
         (
-            weights, boardsize, model.filters, model.num_residual,
-            walls, num_sims, temp_threshold,
+            weights, boardsize, model.filters, model.num_residual, model.gpool_every,
+            walls, num_sims,
             c_puct, dirichlet_alpha, dirichlet_epsilon,
             DIST_BONUS_WEIGHT_MAX, n_workers,
         )
@@ -615,6 +712,7 @@ def compute_loss(
     states:    torch.Tensor,   # (B, 8, N, N)
     target_pi: torch.Tensor,   # (B, A)  float32; 0 for illegal actions
     target_z:  torch.Tensor,   # (B,)    float32
+    use_bf16:  bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Compute combined policy + value loss.
@@ -638,20 +736,33 @@ def compute_loss(
     Value loss
     ----------
     MSE between the predicted value (tanh output) and the actual game outcome.
+
+    ``use_bf16``: wraps the forward pass + loss computation in
+    ``torch.autocast(dtype=torch.bfloat16)`` (CUDA only; a no-op elsewhere).
+    bf16 shares fp32's exponent range (no under/overflow risk like fp16), so
+    no loss scaling is needed; model parameters and the optimizer's Adam
+    state stay fp32 the whole time (autocast only affects op execution
+    dtype, not stored tensors) — this is the standard mixed-precision
+    training recipe, not a full fp16 switch.
     """
-    policy_logits, value = model(states)   # (B, A), (B, 1)
+    device_type = states.device.type
+    with torch.autocast(device_type=device_type, dtype=torch.bfloat16,
+                        enabled=use_bf16 and device_type == "cuda"):
+        policy_logits, value = model(states)   # (B, A), (B, 1)
 
-    # ── Policy loss ──────────────────────────────────────────────────────────
-    legal_mask    = target_pi > 0                                      # (B, A)
-    masked_logits = policy_logits.masked_fill(~legal_mask, float("-inf"))
-    log_probs     = F.log_softmax(masked_logits, dim=1)                # (B, A)
-    # Guard: 0 * (-inf) = NaN  →  replace with 0 (no contribution)
-    loss_p = -(target_pi * log_probs).nan_to_num(0.0).sum(dim=1).mean()
+        # ── Policy loss ──────────────────────────────────────────────────────────
+        legal_mask    = target_pi > 0                                      # (B, A)
+        masked_logits = policy_logits.masked_fill(~legal_mask, float("-inf"))
+        log_probs     = F.log_softmax(masked_logits, dim=1)                # (B, A)
+        # Guard: 0 * (-inf) = NaN  →  replace with 0 (no contribution)
+        loss_p = -(target_pi * log_probs).nan_to_num(0.0).sum(dim=1).mean()
 
-    # ── Value loss ───────────────────────────────────────────────────────────
-    loss_v = F.mse_loss(value.squeeze(1), target_z)
+        # ── Value loss ───────────────────────────────────────────────────────────
+        loss_v = F.mse_loss(value.squeeze(1), target_z)
 
-    return loss_p + VALUE_LOSS_WEIGHT * loss_v, loss_p.detach(), loss_v.detach(), value.detach().squeeze(1)
+        total = loss_p + VALUE_LOSS_WEIGHT * loss_v
+
+    return total, loss_p.detach(), loss_v.detach(), value.detach().squeeze(1)
 
 
 # ── Training phase ────────────────────────────────────────────────────────────
@@ -665,6 +776,7 @@ def run_training_phase(
     device:     torch.device,
     weights:    np.ndarray | None = None,
     log_every:  int = 200,
+    use_bf16:   bool = False,
 ) -> dict[str, float]:
     """
     Run ``steps`` gradient-update steps on mini-batches sampled from the
@@ -677,6 +789,8 @@ def run_training_phase(
 
     The buffer is flattened to numpy arrays once at the start of the phase;
     all subsequent sampling is O(1) index selection into those arrays.
+    ``buf_states``/``buf_policies`` are float16 in storage (see ReplayBuffer);
+    each sampled mini-batch is upcast to float32 here before the forward pass.
 
     Returns mean losses over all steps.
     """
@@ -693,12 +807,12 @@ def run_training_phase(
             idx = np.random.choice(N, size=batch_size, replace=True, p=weights)
         else:
             idx = np.random.randint(0, N, size=batch_size)
-        states    = torch.from_numpy(buf_states[idx]).to(device)
-        target_pi = torch.from_numpy(buf_policies[idx]).to(device)
+        states    = torch.from_numpy(buf_states[idx]).to(device).float()
+        target_pi = torch.from_numpy(buf_policies[idx]).to(device).float()
         target_z  = torch.from_numpy(buf_values[idx]).to(device)
 
         optimizer.zero_grad()
-        loss, lp, lv, val_pred = compute_loss(model, states, target_pi, target_z)
+        loss, lp, lv, val_pred = compute_loss(model, states, target_pi, target_z, use_bf16=use_bf16)
         loss.backward()
         optimizer.step()
 
@@ -806,14 +920,14 @@ def load_buffer_from_disk(
     """
     Populate ``buffer`` from the most recent cycle files on disk.
 
-    Loads up to ``buffer._cycles.maxlen`` cycle files (the most recent ones
+    Loads up to ``buffer._maxcycles`` cycle files (the most recent ones
     by cycle number) so the in-memory buffer exactly mirrors what would have
     been accumulated if training had not been interrupted.
 
     Returns the number of cycle files loaded.
     """
     files = sorted(Path(data_dir).glob("cycle_*.npz"))
-    to_load = files[-buffer._cycles.maxlen:] if buffer._cycles.maxlen else files
+    to_load = files[-buffer._maxcycles:] if buffer._maxcycles else files
     for f in to_load:
         d = np.load(f)
         buffer.add_cycle(d["states"], d["policies"], d["values"])
@@ -834,9 +948,17 @@ def parse_args() -> argparse.Namespace:
                    metavar="N",
                    help="total position-updates per training phase (steps = N // batch)")
     p.add_argument("--batch",   type=int, default=BATCH_SIZE,       metavar="N")
+    p.add_argument("--lr",      type=float, default=LEARNING_RATE,  metavar="F",
+                   help=f"Adam learning rate (default: {LEARNING_RATE})")
     p.add_argument("--filters", type=int, default=FILTERS,          metavar="N")
     p.add_argument("--res",     type=int, default=NUM_RESIDUAL,      metavar="N",
                    help="number of residual blocks")
+    p.add_argument("--gpool-every", type=int, default=GPOOL_EVERY,   metavar="N",
+                   help="every k-th residual block is a KataGo-style global-"
+                        "pooling block (0 = none); only affects fresh model creation")
+    p.add_argument("--bf16",   action="store_true",
+                   help="bfloat16 autocast for the training forward/backward pass "
+                        "(CUDA only; fp32 master weights/optimizer state unaffected)")
     p.add_argument("--workers", type=int, default=NUM_WORKERS,        metavar="N",
                    help="parallel self-play worker processes (default: cpu count)")
     p.add_argument("--train-only", action="store_true",
@@ -844,6 +966,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--smoke-test", action="store_true",
                    help="dry-run: exercise the full pipeline but write no files "
                         "(forces --resume; ignores --cycles, runs exactly 1)")
+    p.add_argument("--model-dir", type=str, default=None, metavar="DIR",
+                   help=f"override MODEL_DIR (default: {MODEL_DIR!r}); also updates "
+                        f"MODEL_PATH/CHECKPOINT_DIR")
+    p.add_argument("--data-dir", type=str, default=None, metavar="DIR",
+                   help=f"override DATA_DIR (default: inferred from --model-dir by "
+                        f"swapping its 'models_' prefix for 'data_', or {DATA_DIR!r} "
+                        f"if --model-dir is also omitted)")
     return p.parse_args()
 
 
@@ -872,7 +1001,7 @@ _STATS_COLUMNS = [
     "batch_size", "train_positions_per_cycle", "buffer_recency_decay",
     "learning_rate", "weight_decay", "value_loss_weight",
     "lr_milestones", "lr_decay",
-    "filters", "num_residual", "num_workers",
+    "filters", "num_residual", "gpool_every", "num_workers",
 ]
 
 
@@ -941,12 +1070,10 @@ def _eval_worker(args: tuple) -> int:
     device = torch.device("cpu")
 
     # Build challenger (reconstruct architecture from weight shapes, same as load_model).
-    _filters, _res, _bs = (
-        challenger_sd["conv.weight"].shape[0],
-        sum(1 for k in challenger_sd if k.startswith("residuals.") and k.endswith(".conv1.weight")),
-        int(challenger_sd["value_fc1.weight"].shape[1] ** 0.5),
-    )
-    challenger_model = DualNetwork(boardsize=_bs, filters=_filters, num_residual=_res).to(device)
+    from dual_network import _infer_arch
+    _filters, _res, _bs, _gpool_every = _infer_arch(challenger_sd)
+    challenger_model = DualNetwork(boardsize=_bs, filters=_filters, num_residual=_res,
+                                  gpool_every=_gpool_every).to(device)
     challenger_model.load_state_dict(challenger_sd)
     challenger_model.eval()
     challenger = MCTSAgent(
@@ -1160,16 +1287,67 @@ def compute_holdout_loss(
     }
 
 
+# ── Console logging ──────────────────────────────────────────────────────────
+
+class _Tee:
+    """File-like object that duplicates writes to an underlying stream and a
+    log file, so every print() during a run is also saved to disk."""
+
+    def __init__(self, stream, log_file) -> None:
+        self._stream = stream
+        self._log_file = log_file
+
+    def write(self, data: str) -> int:
+        self._log_file.write(data)
+        self._log_file.flush()
+        return self._stream.write(data)
+
+    def flush(self) -> None:
+        self._log_file.flush()
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+
+def _start_run_log(log_dir: str) -> str:
+    """Tee stdout/stderr to a timestamped log file under log_dir; returns its path."""
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, f"train_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    # utf-8 explicitly: default encoding on Windows is cp1252, which can't
+    # encode characters like the arrow used in log messages below.
+    log_file = open(path, "a", encoding="utf-8")
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+    return path
+
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global MODEL_DIR, MODEL_PATH, CHECKPOINT_DIR, DATA_DIR
     args = parse_args()
+
+    if args.model_dir is not None:
+        MODEL_DIR = args.model_dir
+        MODEL_PATH = os.path.join(MODEL_DIR, "best.pt")
+        CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")
+    if args.data_dir is not None:
+        DATA_DIR = args.data_dir
+    elif args.model_dir is not None:
+        base = os.path.basename(os.path.normpath(MODEL_DIR))
+        if base.startswith("models_"):
+            DATA_DIR = os.path.join(os.path.dirname(MODEL_DIR), "data_" + base[len("models_"):])
+        # else: no naming convention to infer from — keep the default DATA_DIR
 
     if args.smoke_test:
         args.resume = True   # never overwrite best.pt on startup
         args.cycles = 1      # one cycle is enough to exercise everything
         print("*** SMOKE TEST — no files will be written ***")
         print()
+    else:
+        log_path = _start_run_log(LOG_DIR)
+        print(f"Logging console output to {log_path}")
 
     os.makedirs(MODEL_DIR,      exist_ok=True)
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -1180,9 +1358,10 @@ def main() -> None:
         boardsize    = BOARDSIZE,
         filters      = args.filters,
         num_residual = args.res,
+        gpool_every  = args.gpool_every,
     ).to(DEVICE)
 
-    optimizer = Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=WEIGHT_DECAY)
     scheduler = MultiStepLR(optimizer, milestones=LR_MILESTONES, gamma=LR_DECAY)
 
     start_cycle = 0
@@ -1200,7 +1379,7 @@ def main() -> None:
             # from base_lrs AND milestones on every scheduler.step() call, so a patched
             # base_lrs with the old milestones would silently produce the wrong LR.
             passed = sum(1 for m in LR_MILESTONES if m <= start_cycle)
-            resume_lr = LEARNING_RATE * (LR_DECAY ** passed)
+            resume_lr = args.lr * (LR_DECAY ** passed)
             scheduler = MultiStepLR(optimizer, milestones=LR_MILESTONES, gamma=LR_DECAY)
             scheduler.last_epoch = start_cycle   # fast-forward without firing milestones
             for pg in optimizer.param_groups:
@@ -1217,12 +1396,13 @@ def main() -> None:
                 print(f"No training checkpoint found — loaded weights from {MODEL_PATH}")
             else:
                 print("No checkpoint or weights found — starting with random weights.")
-        start_cycle = max(start_cycle, _latest_data_cycle())
-        n_loaded = load_buffer_from_disk(buffer)
+        start_cycle = max(start_cycle, _latest_data_cycle(DATA_DIR))
+        n_loaded = load_buffer_from_disk(buffer, DATA_DIR)
         print(f"Resuming from cycle {start_cycle + 1}  |  "
               f"Loaded {n_loaded} data file(s) → {buffer.size():,} positions in buffer")
     else:
-        print(f"Starting fresh — boardsize={BOARDSIZE}, filters={args.filters}, res={args.res}")
+        print(f"Starting fresh — boardsize={BOARDSIZE}, filters={args.filters}, "
+              f"res={args.res}, gpool_every={args.gpool_every}")
         save_model(model, MODEL_PATH)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -1236,9 +1416,11 @@ def main() -> None:
     print()
 
     # ── Holdout set (fixed sample; loaded once before the training loop) ────
-    holdout = load_holdout(HOLDOUT_DIR, HOLDOUT_CYCLES, HOLDOUT_SIZE)
+    holdout = load_holdout(HOLDOUT_DIR, HOLDOUT_CYCLES, HOLDOUT_SIZE) if ENABLE_HOLDOUT_EVAL else None
     if holdout is not None:
         print(f"Holdout: {len(holdout[0]):,} positions from last {HOLDOUT_CYCLES} cycles of {HOLDOUT_DIR!r}")
+    elif not ENABLE_HOLDOUT_EVAL:
+        print("Holdout: disabled (ENABLE_HOLDOUT_EVAL = False)")
     else:
         print(f"Holdout: none (no data found in {HOLDOUT_DIR!r})")
     print()
@@ -1267,7 +1449,6 @@ def main() -> None:
                 boardsize         = BOARDSIZE,
                 walls             = WALLS_PER_PLAYER,
                 num_sims          = args.sims,
-                temp_threshold    = TEMP_THRESHOLD,
                 c_puct            = C_PUCT,
                 dirichlet_alpha   = DIRICHLET_ALPHA,
                 dirichlet_epsilon = DIRICHLET_EPSILON,
@@ -1292,7 +1473,7 @@ def main() -> None:
                     f"[SMOKE TEST — data not saved to disk]"
                 )
             else:
-                data_path = save_cycle_data(cycle + 1, states, policies, values)
+                data_path = save_cycle_data(cycle + 1, states, policies, values, DATA_DIR)
                 print(
                     f"Buffer: {buffer.size():,} positions "
                     f"across {buffer.num_cycles()} cycle(s)  "
@@ -1316,6 +1497,7 @@ def main() -> None:
                 batch_size = args.batch,
                 device     = DEVICE,
                 weights    = buf_weights,
+                use_bf16   = args.bf16,
             )
             train_time = time.perf_counter() - t0
             print(
@@ -1384,7 +1566,10 @@ def main() -> None:
                 "mcts_sims_fast":            MCTS_SIMS_FAST,
                 "fast_play_prob":            FAST_PLAY_PROB,
                 "fast_kl_threshold":         FAST_KL_THRESHOLD,
-                "temp_threshold":            TEMP_THRESHOLD,
+                # Column name kept as "temp_threshold" so existing
+                # training_stats.csv files stay column-aligned; value now
+                # describes the KataGo-style selection-temperature schedule.
+                "temp_threshold":            f"sched({TEMP_EARLY}->{TEMP_FINAL},hl={TEMP_HALFLIFE})",
                 "c_puct":                    C_PUCT,
                 "dirichlet_alpha":           DIRICHLET_ALPHA,
                 "dirichlet_epsilon":         DIRICHLET_EPSILON,
@@ -1396,13 +1581,14 @@ def main() -> None:
                 "batch_size":               args.batch,
                 "train_positions_per_cycle": args.train_positions,
                 "buffer_recency_decay":      BUFFER_RECENCY_DECAY,
-                "learning_rate":             LEARNING_RATE,
+                "learning_rate":             args.lr,
                 "weight_decay":              WEIGHT_DECAY,
                 "value_loss_weight":         VALUE_LOSS_WEIGHT,
                 "lr_milestones":             str(LR_MILESTONES),
                 "lr_decay":                  LR_DECAY,
                 "filters":                   args.filters,
                 "num_residual":              args.res,
+                "gpool_every":               args.gpool_every,
                 "num_workers":               args.workers,
             })
 

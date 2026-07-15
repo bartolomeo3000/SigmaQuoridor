@@ -1,11 +1,9 @@
 """
 Lightweight benchmark agents for Quoridor.
 
-  RandomAgent         — uniform random over all legal actions.
-  GreedyDistanceAgent — greedily picks the move that maximises
-                        (opp_dist_to_goal - my_dist_to_goal) in the
-                        resulting position, using State.compute_move_advantages.
-                        Ties broken uniformly at random.
+    RandomAgent         — uniform random over all legal actions.
+    GreedyDistanceAgent — MinimaxAgent fixed at depth 1.
+    RawPolicyAgent      — argmax over evaluator policy priors only.
 
 Both agents expose the same duck-type interface as MCTSAgent so they plug
 straight into the Flask app and evaluation scripts:
@@ -43,47 +41,32 @@ class RandomAgent:
         return [(a, p) for a in legal]
 
 
-class GreedyDistanceAgent:
-    """Greedily maximises (opp_dist_to_goal − my_dist_to_goal) after the move.
-
-    Uses State.compute_move_advantages, which returns
-        (opp_dist_after − my_dist_after) − (opp_dist_now − my_dist_now)
-    for each legal action.  Since the baseline term is the same for every
-    action in a given position, argmax of the delta equals argmax of the
-    absolute distance difference.
-    """
+class RawPolicyAgent:
+    """Chooses the argmax legal action from evaluator policy priors."""
 
     num_simulations = None
 
-    def __init__(self, seed: int | None = None):
+    def __init__(self, evaluator, seed: int | None = None):
+        self.evaluator = evaluator
         self.rng = random.Random(seed)
 
     def select_action(self, state: State, training: bool = False) -> Action:
         legal = state.get_legal_actions()
-        advantages = state.compute_move_advantages(legal)
-        best = max(advantages)
-        candidates = [a for a, v in zip(legal, advantages) if v == best]
+        priors, _ = self.evaluator(state, legal)
+        best = max(priors)
+        candidates = [a for a, p in zip(legal, priors) if p == best]
         return self.rng.choice(candidates)
-
-    def evaluator(self, state: State, legal_actions: list[Action]):
-        advantages = state.compute_move_advantages(legal_actions)
-        arr = np.array(advantages, dtype=float)
-        arr -= arr.max()          # numerical stability
-        exp_a = np.exp(arr)
-        priors = (exp_a / exp_a.sum()).tolist()
-        return priors, 0.0
 
     def get_policy(self, state: State) -> list[tuple[Action, float]]:
         legal = state.get_legal_actions()
-        advantages = state.compute_move_advantages(legal)
-        best = max(advantages)
-        policy = [(a, 1.0 if v == best else 0.0) for a, v in zip(legal, advantages)]
+        priors, _ = self.evaluator(state, legal)
+        policy = list(zip(legal, priors))
         policy.sort(key=lambda x: x[1], reverse=True)
         return policy
 
 
 class MinimaxAgent:
-    """Greedy-distance heuristic with shallow alpha-beta minimax (depth 2–4).
+    """Greedy-distance heuristic with alpha-beta minimax at any positive depth.
 
     Move ordering at every node uses ``compute_move_advantages`` (current
     player's perspective), which provides good alpha-beta cutoffs without
@@ -98,8 +81,8 @@ class MinimaxAgent:
     num_simulations = None
 
     def __init__(self, depth: int = 3, seed: int | None = None):
-        if depth not in (2, 3, 4):
-            raise ValueError("MinimaxAgent depth must be 2, 3, or 4")
+        if not isinstance(depth, int) or depth < 1:
+            raise ValueError("MinimaxAgent depth must be a positive integer")
         self.depth = depth
         self.rng = random.Random(seed)
 
@@ -133,10 +116,15 @@ class MinimaxAgent:
 
     @staticmethod
     def _ordered_actions(state: State, legal_actions: list) -> list:
-        """Sort actions best-first for the current mover (improves α-β cutoffs)."""
+        """Sort actions best-first for the current mover (improves α-β cutoffs).
+        Immediately winning moves are placed first regardless of heuristic score."""
         advantages = state.compute_move_advantages(legal_actions)
-        return [a for a, _ in sorted(zip(legal_actions, advantages),
-                                     key=lambda x: x[1], reverse=True)]
+        WIN_BONUS = 1e12
+        scored = [
+            (a, WIN_BONUS if state.next(a).winner() != 0 else adv)
+            for a, adv in zip(legal_actions, advantages)
+        ]
+        return [a for a, _ in sorted(scored, key=lambda x: x[1], reverse=True)]
 
     def _alphabeta(self, state: State, depth: int, alpha: float, beta: float,
                    maximizing: bool, maximizing_player: int) -> float:
@@ -178,6 +166,12 @@ class MinimaxAgent:
     def select_action(self, state: State, training: bool = False) -> Action:
         maximizing_player = 1 if state.is_player1_turn() else 2
         legal = state.get_legal_actions()
+
+        # Short-circuit: take a free win without running the full search.
+        wins = [a for a in legal if state.next(a).winner() != 0]
+        if wins:
+            return self.rng.choice(wins)
+
         ordered = self._ordered_actions(state, legal)
 
         best_val = -1e18
@@ -218,3 +212,10 @@ class MinimaxAgent:
         policy = [(a, 1.0 if v == best else 0.0) for a, v in zip(legal, values)]
         policy.sort(key=lambda x: x[1], reverse=True)
         return policy
+
+
+class GreedyDistanceAgent(MinimaxAgent):
+    """One-ply MinimaxAgent."""
+
+    def __init__(self, seed: int | None = None):
+        super().__init__(depth=1, seed=seed)
