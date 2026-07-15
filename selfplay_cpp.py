@@ -154,6 +154,12 @@ def main() -> None:
                    help="safety cap on wall-clock seconds for in-tree MCTS leaf "
                         "solves; a timed-out attempt falls back to a normal NN "
                         "eval leaf for that node")
+    p.add_argument("--abandon-stragglers-below", type=int, default=0,
+                   help="once fewer than this many games remain unfinished, stop "
+                        "immediately and discard them instead of waiting for the "
+                        "long GPU-starved tail (last few games run with batch "
+                        "size ~1-4, dragging out wall-clock disproportionately). "
+                        "0 disables (default: wait for every game to finish)")
     p.add_argument("--no-augment", action="store_true",
                    help="skip left-right flip augmentation")
     p.add_argument("--compile", action="store_true",
@@ -239,6 +245,13 @@ def main() -> None:
                     last_report = now
                     win_evals = 0
                     win_batches = 0
+                if args.abandon_stragglers_below > 0 and (
+                        args.games - mgr.games_finished()
+                        <= args.abandon_stragglers_below):
+                    print(f"abandoning {args.games - mgr.games_finished()} straggler "
+                          f"game(s) still in flight (--abandon-stragglers-below "
+                          f"{args.abandon_stragglers_below})")
+                    break
     finally:
         mgr.stop()
 

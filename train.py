@@ -101,13 +101,19 @@ RANDOM_WALL_FRACTION = 0.05  # fraction of games to apply random wall pre-fill t
 BUFFER_CYCLES = 30         # keep positions from this many recent cycles
 
 # Training
-BATCH_SIZE                 = 256
+BATCH_SIZE                 = 1024   # was 256; GPU has headroom, and BatchNorm/value-target
+                                    # noise both benefit from the larger batch (see
+                                    # docs/cpp_selfplay_notes.md for the LR sweep this was
+                                    # paired with -- LR was scaled ~sqrt(4x) alongside this)
 TRAIN_POSITIONS_PER_CYCLE  = 1_024_000  # gradient updates = this // BATCH_SIZE per cycle
 BUFFER_RECENCY_DECAY       = 0.92     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
 MIN_BUFFER_SIZE            = BATCH_SIZE
 
 # Optimizer
-LEARNING_RATE     = 1e-4
+LEARNING_RATE     = 3e-4  # was 1e-4 at batch 256; sqrt-scaled for the 4x batch increase
+                          # (Adam heuristic -- see chat history). Not yet empirically swept;
+                          # a quick supervised_train.py LR sweep on data_9x9 is a sensible
+                          # next step before trusting this in the live RL loop.
 WEIGHT_DECAY      = 1e-4
 VALUE_LOSS_WEIGHT = 1.0         # multiply value MSE loss (KataGo uses ~1.5)
 LR_MILESTONES  = [800, 1600]    # cycle numbers at which to multiply LR by LR_DECAY
@@ -942,6 +948,8 @@ def parse_args() -> argparse.Namespace:
                    metavar="N",
                    help="total position-updates per training phase (steps = N // batch)")
     p.add_argument("--batch",   type=int, default=BATCH_SIZE,       metavar="N")
+    p.add_argument("--lr",      type=float, default=LEARNING_RATE,  metavar="F",
+                   help=f"Adam learning rate (default: {LEARNING_RATE})")
     p.add_argument("--filters", type=int, default=FILTERS,          metavar="N")
     p.add_argument("--res",     type=int, default=NUM_RESIDUAL,      metavar="N",
                    help="number of residual blocks")
@@ -1353,7 +1361,7 @@ def main() -> None:
         gpool_every  = args.gpool_every,
     ).to(DEVICE)
 
-    optimizer = Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=WEIGHT_DECAY)
     scheduler = MultiStepLR(optimizer, milestones=LR_MILESTONES, gamma=LR_DECAY)
 
     start_cycle = 0
@@ -1371,7 +1379,7 @@ def main() -> None:
             # from base_lrs AND milestones on every scheduler.step() call, so a patched
             # base_lrs with the old milestones would silently produce the wrong LR.
             passed = sum(1 for m in LR_MILESTONES if m <= start_cycle)
-            resume_lr = LEARNING_RATE * (LR_DECAY ** passed)
+            resume_lr = args.lr * (LR_DECAY ** passed)
             scheduler = MultiStepLR(optimizer, milestones=LR_MILESTONES, gamma=LR_DECAY)
             scheduler.last_epoch = start_cycle   # fast-forward without firing milestones
             for pg in optimizer.param_groups:
@@ -1573,7 +1581,7 @@ def main() -> None:
                 "batch_size":               args.batch,
                 "train_positions_per_cycle": args.train_positions,
                 "buffer_recency_decay":      BUFFER_RECENCY_DECAY,
-                "learning_rate":             LEARNING_RATE,
+                "learning_rate":             args.lr,
                 "weight_decay":              WEIGHT_DECAY,
                 "value_loss_weight":         VALUE_LOSS_WEIGHT,
                 "lr_milestones":             str(LR_MILESTONES),

@@ -66,6 +66,10 @@ def main() -> None:
     p.add_argument("--mcts-solver-max-total-walls", type=int, default=0)
     p.add_argument("--mcts-solver-node-limit", type=int, default=20_000)
     p.add_argument("--mcts-solver-time-limit-s", type=float, default=0.02)
+    p.add_argument("--abandon-stragglers-below", type=int, default=0,
+                   help="forwarded to selfplay_cpp.py --abandon-stragglers-below "
+                        "(stop and discard the last few in-flight games instead "
+                        "of waiting out the GPU-starved tail; 0 disables)")
     p.add_argument("--bf16", action="store_true",
                    help="forwarded to selfplay_cpp.py --bf16 (bfloat16 autocast inference, CUDA only)")
     p.add_argument("--compile", action="store_true",
@@ -126,6 +130,7 @@ def main() -> None:
             "--mcts-solver-max-total-walls", str(args.mcts_solver_max_total_walls),
             "--mcts-solver-node-limit", str(args.mcts_solver_node_limit),
             "--mcts-solver-time-limit-s", str(args.mcts_solver_time_limit_s),
+            "--abandon-stragglers-below", str(args.abandon_stragglers_below),
             "--seed", str(args.seed + cycle),
         ]
         if args.bf16:
