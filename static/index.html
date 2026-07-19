@@ -117,6 +117,7 @@
       transition: background 0.15s, border-color 0.15s;
     }
     button:hover { background: var(--surface); border-color: var(--muted); }
+    button.toggle-active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
 
     /* ── agent select ── */
     .agent-select {
@@ -303,12 +304,13 @@
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
       <span id="sims-display" style="font-size:12px;font-weight:600">800</span>
     </div>
-    <input id="sims-slider" type="range" min="400" max="10000" step="400" value="800"
+    <input id="sims-slider" type="range" min="100" max="10000" step="100" value="800"
            style="width:100%;accent-color:#3fb950;cursor:pointer">
   </div>
 
   <button id="btn-reset">&#x21BA; New Game</button>
   <button id="btn-undo">&#x21A9; Undo Move</button>
+  <button id="btn-flip">&#x21C5; Flip Board</button>
   <button id="btn-nn">&#x1F9E0; NN Channels</button>
   <button id="btn-analysis">&#x1F4CA; Analysis</button>
 </div>
@@ -422,9 +424,22 @@ let _searchGen     = 0;
 // ── Coordinate helpers ────────────────────────────────────────────────────────
 // Game: (0,0) = bottom-left, y increases upward.
 // Canvas: top-left origin, y increases downward → flip y.
+//
+// boardFlipped is a pure DISPLAY preference (never touches game state/logic):
+// when on, row 0 (Player 1's home row) renders at the top instead of the
+// bottom, which is what you want when playing as Player 2 and prefer your own
+// home row at the bottom. flipRow/flipWallRow are self-inverse, so each serves
+// as both the forward (game → screen) and inverse (screen → game) row mapping.
+let boardFlipped = false;
+function flipRow(gy) {
+  return boardFlipped ? gy : (state.boardsize - 1 - gy);
+}
+function flipWallRow(ay) {
+  return boardFlipped ? ay : (state.boardsize - 2 - ay);
+}
 
 function cellOrigin(gx, gy) {
-  return { x: gx * STEP, y: (state.boardsize - 1 - gy) * STEP };
+  return { x: gx * STEP, y: flipRow(gy) * STEP };
 }
 
 function canvasSize() { return state.boardsize * STEP - GAP; }
@@ -436,7 +451,7 @@ function pixelToCell(px, py) {
   const localX = px - col * STEP;
   const localY = py - row * STEP;
   if (localX >= CELL || localY >= CELL) return null;   // inside a gap
-  const gy = state.boardsize - 1 - row;
+  const gy = flipRow(row);
   if (col < 0 || col >= state.boardsize || gy < 0 || gy >= state.boardsize) return null;
   return { gx: col, gy };
 }
@@ -489,7 +504,7 @@ function pixelToWall(px, py) {
   let hCand = null, vCand = null;
 
   if (inHGap) {
-    const ay = bs - 2 - gapRowIdx;          // game anchor row for this h-gap
+    const ay = flipWallRow(gapRowIdx);      // game anchor row for this h-gap
     if (ay >= 0 && ay <= bs - 2) {
       // Nearest h-wall center-x:  cx = ax*STEP + CELL + GAP/2
       const ax = Math.max(0, Math.min(bs - 2,
@@ -505,9 +520,9 @@ function pixelToWall(px, py) {
     if (ax >= 0 && ax <= bs - 2) {
       // Nearest v-wall center-y:  cy = (bs-2-ay)*STEP + CELL + GAP/2
       const ay = Math.max(0, Math.min(bs - 2,
-        Math.round((bs - 2) - (py - CELL - GAP / 2) / STEP)));
+        Math.round(flipWallRow((py - CELL - GAP / 2) / STEP))));
       // Confirm py is within the wall's 2-cell y-span
-      const wallTop = (bs - 2 - ay) * STEP;
+      const wallTop = flipWallRow(ay) * STEP;
       if (py >= wallTop && py <= wallTop + 2 * CELL + GAP)
         vCand = { ax, ay, orientation: 'v' };
     }
@@ -520,7 +535,7 @@ function pixelToWall(px, py) {
   // Both candidates (crossing corner): pick by perpendicular distance to centerline,
   // with a bias toward h-walls since horizontal placement is more common.
   // h wins unless the cursor is strictly closer to the v centerline by > GAP/2.
-  const hCenterY = (bs - 2 - hCand.ay) * STEP + CELL + GAP / 2;
+  const hCenterY = flipWallRow(hCand.ay) * STEP + CELL + GAP / 2;
   const vCenterX = vCand.ax * STEP + CELL + GAP / 2;
   return Math.abs(px - vCenterX) < Math.abs(py - hCenterY) - GAP / 2 ? vCand : hCand;
 }
@@ -565,9 +580,9 @@ function drawLabels(ctx) {
   ctx.font = `${Math.round(LABEL * 0.6)}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // Left side: y-axis (gy=0 at bottom)
+  // Left side: y-axis (gy=0 at bottom, unless the board is flipped)
   for (let gy = 0; gy < bs; gy++) {
-    const cy = (bs - 1 - gy) * STEP + CELL / 2;
+    const cy = flipRow(gy) * STEP + CELL / 2;
     ctx.fillText(String(gy), LABEL / 2, cy);
   }
   // Bottom: x-axis (gx=0 at left)
@@ -619,11 +634,10 @@ function drawCells(ctx) {
 // Draw one wall rectangle (h or v) given anchor coords.
 // fill / shadowColor should be set before calling.
 function drawOneWall(ctx, ax, ay, orientation) {
-  const bs = state.boardsize;
   if (orientation === 'h') {
-    rrect(ctx, ax * STEP, (bs - 2 - ay) * STEP + CELL, 2 * CELL + GAP, GAP, 3);
+    rrect(ctx, ax * STEP, flipWallRow(ay) * STEP + CELL, 2 * CELL + GAP, GAP, 3);
   } else {
-    rrect(ctx, ax * STEP + CELL, (bs - 2 - ay) * STEP, GAP, 2 * CELL + GAP, 3);
+    rrect(ctx, ax * STEP + CELL, flipWallRow(ay) * STEP, GAP, 2 * CELL + GAP, 3);
   }
   ctx.fill();
 }
@@ -1285,6 +1299,12 @@ const canvas = document.getElementById('board');
 setupInput(canvas);
 document.getElementById('btn-reset').addEventListener('click', resetGame);
 document.getElementById('btn-undo').addEventListener('click', undoMove);
+document.getElementById('btn-flip').addEventListener('click', () => {
+  boardFlipped = !boardFlipped;
+  document.getElementById('btn-flip').classList.toggle('toggle-active', boardFlipped);
+  hoverWall = null;
+  if (state) draw(document.getElementById('board').getContext('2d'));
+});
 document.getElementById('btn-nn').addEventListener('click', () => {
   const panel = document.getElementById('nn-panel');
   if (panel.classList.contains('open')) {

@@ -49,7 +49,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from game import State, Action, action_to_index, action_space_size
+from game import (State, Action, action_to_index, action_space_size,
+                  vert_policy_permutation)
 
 # ---------------------------------------------------------------------------
 # Device
@@ -271,6 +272,26 @@ class NNEvaluator:
         self.model  = model
         self.device = device or DEVICE
         self.model.eval()
+        # Vertical action permutation (raw <-> canonical frame). The network
+        # produces policy in the current player's canonical POV, so for P2 we
+        # gather each real action's logit at its vertically-flipped index.
+        self._vperm = torch.from_numpy(
+            vert_policy_permutation(self.model.boardsize)
+        ).to(self.device)
+
+    def _canon_indices(self, legal_actions: list[Action], flip: bool) -> torch.Tensor:
+        """Policy-head indices at which to read each legal action's logit.
+
+        For P2 (``flip``), map the raw action index to its canonical (vertically
+        flipped) index so the raw-frame legal action is read from the network's
+        canonical-frame output.
+        """
+        idx = torch.tensor(
+            [action_to_index(a, self.model.boardsize) for a in legal_actions],
+            dtype=torch.long,
+            device=self.device,
+        )
+        return self._vperm[idx] if flip else idx
 
     def __call__(
         self,
@@ -285,11 +306,8 @@ class NNEvaluator:
             policy_logits = policy_logits[0]       # (A,)
 
             # Gather logits for legal actions, then softmax over that subset
-            indices = torch.tensor(
-                [action_to_index(a, state.boardsize) for a in legal_actions],
-                dtype=torch.long,
-                device=self.device,
-            )
+            indices      = self._canon_indices(legal_actions,
+                                               not state.is_player1_turn())
             legal_logits = policy_logits[indices]                  # (n_legal,)
             priors       = torch.softmax(legal_logits, dim=0).cpu().tolist()
 
@@ -299,6 +317,7 @@ class NNEvaluator:
         self,
         arrays:             list[np.ndarray],
         legal_actions_list: list[list[Action]],
+        flips:              list[bool] | None = None,
     ) -> list[tuple[list[float], float]]:
         """
         Evaluate a batch of pre-computed ``(8, N, N)`` float32 arrays in one
@@ -308,21 +327,24 @@ class NNEvaluator:
         such as ``SymmetricEvaluator`` can supply pre-flipped inputs without
         reconstructing state objects.
 
+        ``flips[i]`` selects the canonical (vertical) frame mapping for item i
+        (True for P2-to-move positions); ``None`` means no item is flipped.
+        Because the arrays carry no side-to-move information, the caller must
+        supply this explicitly whenever P2 positions are in the batch.
+
         Returns one ``(priors, value)`` pair per input array.
         """
         inputs    = torch.from_numpy(np.stack(arrays)).to(self.device)  # (B, 8, N, N)
-        boardsize = self.model.boardsize
         with torch.no_grad():
             logits_batch, values_batch = self.model(inputs)              # (B, A), (B, 1)
 
+        if flips is None:
+            flips = [False] * len(legal_actions_list)
         results: list[tuple[list[float], float]] = []
-        for la, logits, val in zip(legal_actions_list, logits_batch, values_batch):
-            indices = torch.tensor(
-                [action_to_index(a, boardsize) for a in la],
-                dtype=torch.long,
-                device=self.device,
-            )
-            priors = torch.softmax(logits[indices], dim=0).cpu().tolist()
+        for la, logits, val, flip in zip(legal_actions_list, logits_batch,
+                                         values_batch, flips):
+            indices = self._canon_indices(la, flip)
+            priors  = torch.softmax(logits[indices], dim=0).cpu().tolist()
             results.append((priors, float(val[0])))
         return results
 
@@ -335,10 +357,11 @@ class NNEvaluator:
         Evaluate a batch of game states in one forward pass.
 
         Converts each state to its NN input array and delegates to
-        ``batch_call_raw``.
+        ``batch_call_raw``, passing the per-state canonical-frame flip.
         """
         arrays = [s.to_nn_input() for s in states]
-        return self.batch_call_raw(arrays, legal_actions_list)
+        flips  = [not s.is_player1_turn() for s in states]
+        return self.batch_call_raw(arrays, legal_actions_list, flips)
 
 
 # ---------------------------------------------------------------------------

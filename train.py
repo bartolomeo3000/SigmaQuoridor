@@ -55,7 +55,7 @@ from torch.optim.lr_scheduler import MultiStepLR
 
 from benchmark_agents import GreedyDistanceAgent, MinimaxAgent, RandomAgent
 from dual_network import DEVICE, DualNetwork, NNEvaluator, load_model, save_model
-from game import State, WallAction, action_space_size, action_to_index, flip_nn_input_lr, flip_policy_lr
+from game import State, WallAction, action_space_size, action_to_index, flip_nn_input_lr, flip_policy_lr, flip_policy_vert
 from mcts import MCTSAgent
 
 # ── Default hyper-parameters ────────────────────────────────────────────────
@@ -131,7 +131,7 @@ EVAL_SIMS  = 800   # MCTS simulations for the challenger during evaluation
 
 # Holdout validation (fixed set sampled once from a previous run's data)
 ENABLE_HOLDOUT_EVAL = False   # holdout loss is slow (HOLDOUT_SIZE positions/cycle); off by default
-HOLDOUT_DIR    = "data_9x9"   # source directory for holdout positions
+HOLDOUT_DIR    = "data_9x9_fix"   # source directory for holdout positions
 HOLDOUT_CYCLES = 10            # how many most-recent cycles to draw from
 HOLDOUT_SIZE   = 4096*100         # positions to evaluate per cycle (fixed sample)
 
@@ -161,7 +161,7 @@ MODEL_DIR      = "models_9x9"                               # model checkpoints 
 MODEL_PATH     = os.path.join(MODEL_DIR, "best.pt")         # inference weights only
 LOG_DIR        = "logs"                                     # per-run console transcripts
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")     # full training state
-DATA_DIR       = "data_9x9"                                  # persisted self-play cycles
+DATA_DIR       = "data_9x9_fix"                              # persisted self-play cycles
 
 # Run
 NUM_CYCLES        = 100
@@ -442,6 +442,10 @@ def self_play_game(
             policy_vec = np.zeros(A, dtype=np.float32)
             for child, prob in zip(children, target):
                 policy_vec[action_to_index(child.action, boardsize)] = prob
+            # Record the target in the current player's canonical frame (matches
+            # the canonical to_nn_input): vertically flip P2's policy indices.
+            if state.get_current_player() == 2:
+                policy_vec = flip_policy_vert(policy_vec, boardsize)
 
             history.append((
                 state.to_nn_input(),         # (8, N, N) float32
@@ -558,7 +562,11 @@ class SymmetricEvaluator:
 
         arrays    = []
         out_legal = []
+        flips     = []
         for state, la in zip(states, legal_actions_list):
+            # Vertical canonical-frame flip depends only on side-to-move, which
+            # the LR mirror below does not change.
+            flips.append(not state.is_player1_turn())
             if np.random.random() < 0.5:
                 arrays.append(state.to_nn_input())
                 out_legal.append(la)
@@ -566,7 +574,7 @@ class SymmetricEvaluator:
                 arrays.append(flip_nn_input_lr(state.to_nn_input()))
                 out_legal.append([mirror_action(a) for a in la])
 
-        return self._inner.batch_call_raw(arrays, out_legal)
+        return self._inner.batch_call_raw(arrays, out_legal, flips)
 
 
 def _worker_play_game(args: tuple):

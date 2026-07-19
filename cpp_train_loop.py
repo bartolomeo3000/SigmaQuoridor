@@ -17,7 +17,7 @@ number of cycles:
                           appends a training_stats.csv row.
 
 Both scripts agree on the fixed paths MODEL_PATH (default models_9x9/best.pt)
-and DATA_DIR (default data_9x9), overridable via --model-dir/--data-dir, so
+and DATA_DIR (default data_9x9_fix), overridable via --model-dir/--data-dir, so
 nothing needs to be passed between the two steps beyond those paths.
 
 Example:
@@ -30,7 +30,7 @@ import subprocess
 import sys
 
 MODEL_PATH = "models_9x9/best.pt"
-DATA_DIR = "data_9x9"
+DATA_DIR = "data_9x9_fix"
 
 
 def main() -> None:

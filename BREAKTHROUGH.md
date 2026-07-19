@@ -4,4 +4,9 @@ Need to play 186 as 1st player to confirm.
 Also try and play some games at non zero temperature, e.g. temp=0.15 to see how stable it is and how often can it still win by sometimes deviating from its argmax move selection.
 
 (16.07.2026) Cycle 234 also wins as P2 at 2000 sims.
-It also won at 1200 sims but lost at 800.
+It also won at 1600 sims but lost at 800 or 1200.
+
+(17.07.2026) Cycle 339 wins as P2 at 1600 sims. Still loses at 1200 and 800 though.
+
+(19.07.2026) After the reversed policy fix, cycle 359 wins as P2 (and P1) at 800 sims!
+It even wins at 400 sims! Even at 200 sims it still won!

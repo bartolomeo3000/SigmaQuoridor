@@ -82,15 +82,18 @@ constexpr uint8_t TF_EXPANDED = 1;
 constexpr uint8_t TF_TERMINAL = 2;
 constexpr uint8_t TF_PENDING  = 4;
 
-// Masked softmax over `legal` actions from a raw (A,) logits row.
+// Masked softmax over `legal` actions from a raw (A,) logits row. The network
+// outputs policy in the current player's canonical POV, so P2 leaves (`flip`)
+// read each real action's logit at its vertically-flipped index.
 inline void t_masked_softmax(const float* row, const std::vector<uint16_t>& legal,
-                             std::vector<float>& priors) {
+                             std::vector<float>& priors, int N, bool flip) {
     priors.resize(legal.size());
     float mx = -1e30f;
-    for (uint16_t a : legal) mx = std::max(mx, row[a]);
+    for (uint16_t a : legal) mx = std::max(mx, row[flip ? vflip_action(a, N) : a]);
     double sum = 0.0;
     for (size_t j = 0; j < legal.size(); ++j) {
-        const double e = std::exp(double(row[legal[j]] - mx));
+        const int idx = flip ? vflip_action(legal[j], N) : int(legal[j]);
+        const double e = std::exp(double(row[idx] - mx));
         priors[j] = float(e);
         sum += e;
     }
@@ -106,6 +109,7 @@ struct TPendingLeaf {
     std::vector<float> planes;
     std::vector<float> priors;
     float value = 0.0f;
+    bool flip = false;                    // P2 leaf: gather priors in canonical frame
 };
 
 struct TGame {
@@ -281,7 +285,7 @@ public:
             TPendingLeaf& p = g.pending[refs[i].pidx];
             const float* row = logits + size_t(i) * A;
 
-            t_masked_softmax(row, p.legal, p.priors);
+            t_masked_softmax(row, p.legal, p.priors, cfg_.boardsize, p.flip);
             p.value = values[i];
 
             if (--g.results_missing == 0) {
@@ -477,6 +481,7 @@ private:
             TPendingLeaf p;
             p.node = cur;
             p.legal = legal;
+            p.flip = !st.is_p1_turn();
             p.paths.push_back(path);
             const int NN = cfg_.boardsize * cfg_.boardsize;
             p.planes.resize(8 * NN);
@@ -498,6 +503,7 @@ private:
         p.node = 0;
         p.is_root = true;
         p.legal = g.root_legal;
+        p.flip = !g.state.is_p1_turn();
         const int NN = cfg_.boardsize * cfg_.boardsize;
         p.planes.resize(8 * NN);
         g.state.nn_input(p.planes.data());

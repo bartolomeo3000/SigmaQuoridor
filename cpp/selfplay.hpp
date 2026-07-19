@@ -183,14 +183,18 @@ inline TTKey tt_key(const GameState& st) {
 
 // Masked softmax over `legal` actions from a raw (A,) logits row -- shared by
 // the real NN-result path (put_results) and the transposition-cache-hit path.
+// The network produces policy in the current player's canonical POV, so for a
+// P2 leaf (`flip`) each real action's logit is read at its vertically-flipped
+// index (see vflip_action / game.py vert_policy_permutation).
 inline void masked_softmax(const float* row, const std::vector<uint16_t>& legal,
-                           std::vector<float>& priors) {
+                           std::vector<float>& priors, int N, bool flip) {
     priors.resize(legal.size());
     float mx = -1e30f;
-    for (uint16_t a : legal) mx = std::max(mx, row[a]);
+    for (uint16_t a : legal) mx = std::max(mx, row[flip ? vflip_action(a, N) : a]);
     double sum = 0.0;
     for (size_t j = 0; j < legal.size(); ++j) {
-        const double e = std::exp(double(row[legal[j]] - mx));
+        const int idx = flip ? vflip_action(legal[j], N) : int(legal[j]);
+        const double e = std::exp(double(row[idx] - mx));
         priors[j] = float(e);
         sum += e;
     }
@@ -208,6 +212,7 @@ struct PendingLeaf {
     std::vector<float> planes;                   // (8*N*N) NN input
     std::vector<float> priors;                   // filled by put_results
     float value = 0.0f;                          // filled by put_results
+    bool flip = false;                           // P2 leaf: gather priors in canonical frame
 
     // Transposition-table bookkeeping (see TTKey above).
     bool resolved = false;    // true if priors/value already filled from cache
@@ -397,7 +402,7 @@ public:
             PendingLeaf& p = g.pending[refs[i].pidx];
             const float* row = logits + size_t(i) * A;
 
-            masked_softmax(row, p.legal, p.priors);
+            masked_softmax(row, p.legal, p.priors, cfg_.boardsize, p.flip);
             p.value = values[i];
             if (p.cacheable) tt_insert(p.cache_key, row, A, p.value);
 
@@ -554,7 +559,10 @@ private:
             state_before.nn_input(g.rec_planes.data() + sp);
             const size_t pp = g.rec_policy.size();
             g.rec_policy.resize(pp + A, 0.0f);
-            g.rec_policy[pp + action] = 1.0f;
+            // One-hot solver target in the current player's canonical frame.
+            const int ridx = state_before.is_p1_turn()
+                           ? int(action) : vflip_action(action, cfg_.boardsize);
+            g.rec_policy[pp + ridx] = 1.0f;
             g.rec_player.push_back(int8_t(state_before.current_player()));
             ++g.plies;
 
@@ -713,6 +721,7 @@ private:
             PendingLeaf p;
             p.node = cur;
             p.legal = legal;
+            p.flip = !st.is_p1_turn();
             p.paths.push_back(path);
             if (g.w_cur != 0.0f) {
                 p.adv.resize(legal.size());
@@ -724,7 +733,8 @@ private:
                 const TTKey key = tt_key(st);
                 TTEntry entry;
                 if (tt_lookup(key, entry)) {
-                    masked_softmax(entry.logits.data(), legal, p.priors);
+                    masked_softmax(entry.logits.data(), legal, p.priors,
+                                   cfg_.boardsize, p.flip);
                     p.value = entry.value;
                     p.resolved = true;
                     cache_hit = true;
@@ -760,6 +770,7 @@ private:
         p.node = 0;
         p.is_root = true;
         p.legal = g.root_legal;
+        p.flip = !g.state.is_p1_turn();
         if (g.w_cur != 0.0f) {
             p.adv.resize(p.legal.size());
             g.state.move_advantages(p.legal, p.adv.data());
@@ -770,7 +781,8 @@ private:
             const TTKey key = tt_key(g.state);
             TTEntry entry;
             if (tt_lookup(key, entry)) {
-                masked_softmax(entry.logits.data(), p.legal, p.priors);
+                masked_softmax(entry.logits.data(), p.legal, p.priors,
+                               cfg_.boardsize, p.flip);
                 p.value = entry.value;
                 p.resolved = true;
                 cache_hit = true;
@@ -966,8 +978,14 @@ private:
         g.state.nn_input(g.rec_planes.data() + sp);
         const size_t pp = g.rec_policy.size();
         g.rec_policy.resize(pp + A, 0.0f);
-        for (int k = 0; k < nc; ++k)
-            g.rec_policy[pp + g.arena[r.first_child + k].action] = float(probs[k]);
+        // Record the policy target in the current player's canonical frame
+        // (matches the canonical nn_input above): flip action indices for P2.
+        const bool flip = !g.state.is_p1_turn();
+        for (int k = 0; k < nc; ++k) {
+            const uint16_t a = g.arena[r.first_child + k].action;
+            const int ridx = flip ? vflip_action(a, cfg_.boardsize) : int(a);
+            g.rec_policy[pp + ridx] = float(probs[k]);
+        }
         g.rec_player.push_back(int8_t(g.state.current_player()));
         ++g.plies;
 

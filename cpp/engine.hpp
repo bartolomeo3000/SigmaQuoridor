@@ -44,6 +44,25 @@ constexpr int8_t DIRS[8][2] = {
 
 inline int action_space(int N) { return 8 + 2 * (N - 1) * (N - 1); }
 
+// Vertical (top<->bottom) action-index flip, matching the nn_input vertical
+// perspective flip applied for P2 (new_y = N-1-old_y). Used for FULL
+// canonicalization: the network operates entirely in the current player's POV
+// (moving toward row N-1), so P2 policy targets are recorded, and P2 priors are
+// gathered, in this vertically-flipped frame. Self-inverse (an involution).
+// Must stay in sync with game.py vert_policy_permutation / flip_policy_vert.
+inline int vflip_action(int a, int N) {
+    // pawn dirs: dy -> -dy (up<->down, and the up/down diagonal pairs)
+    static constexpr int PAWN[8] = {1, 0, 2, 3, 6, 7, 4, 5};
+    if (a < 8) return PAWN[a];
+    const int W = N - 1;
+    int wi = a - 8;
+    const bool horiz = wi < W * W;
+    if (!horiz) wi -= W * W;
+    const int x = wi % W, y = wi / W;
+    const int fy = W - 1 - y;                       // wall anchor row: y -> N-2-y
+    return 8 + (horiz ? 0 : W * W) + fy * W + x;
+}
+
 // ---------------------------------------------------------------------------
 // Zobrist hashing
 // ---------------------------------------------------------------------------

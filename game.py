@@ -1080,6 +1080,52 @@ def flip_policy_lr(policy: np.ndarray, boardsize: int) -> np.ndarray:
     return flipped
 
 
+# ---------------------------------------------------------------------------
+# Vertical (top-bottom) symmetry helpers — for full canonicalization
+# ---------------------------------------------------------------------------
+#
+# to_nn_input() already presents the board from the current player's POV
+# (always moving toward row N-1), flipping vertically for P2.  For the policy
+# to live in that same canonical frame, P2 policy targets must be recorded, and
+# P2 priors gathered, through the matching vertical action permutation below.
+# Otherwise the network sees a canonical board but is trained/queried in the
+# raw board frame — an unlearnable ambiguity that blurs the policy (the net has
+# no side-to-move input, so a P1 position and its role-swapped mirror produce a
+# byte-identical nn_input yet demand vertically-opposite targets).
+
+# Pawn direction indices after a vertical flip: dy -> -dy, dx unchanged.
+# ALL_PAWN_DIRECTIONS: 0=(0,1) 1=(0,-1) 2=(-1,0) 3=(1,0)
+#                      4=(-1,1) 5=(1,1) 6=(-1,-1) 7=(1,-1)
+_VERT_PAWN_FLIP = (1, 0, 2, 3, 6, 7, 4, 5)
+
+
+def vert_policy_permutation(boardsize: int) -> np.ndarray:
+    """
+    Index permutation ``perm`` for a vertical board flip such that
+    ``flip_policy_vert(p) == p[perm]``.  Also maps a raw-frame action index to
+    its canonical (flipped) index and vice-versa (the permutation is an
+    involution).  Must stay in sync with ``vflip_action`` in cpp/engine.hpp.
+    """
+    W = boardsize - 1
+    perm = np.empty(action_space_size(boardsize), dtype=np.int64)
+    for i in range(8):
+        perm[i] = _VERT_PAWN_FLIP[i]
+    for y in range(W):
+        for x in range(W):
+            perm[8 + y * W + x]         = 8 + (W - 1 - y) * W + x          # H-walls
+            perm[8 + W * W + y * W + x] = 8 + W * W + (W - 1 - y) * W + x  # V-walls
+    return perm
+
+
+def flip_policy_vert(policy: np.ndarray, boardsize: int) -> np.ndarray:
+    """
+    Remap a full-size policy vector to the vertically-flipped (top-bottom)
+    board.  Pawn moves swap up<->down (and the up/down diagonal pairs); wall
+    anchors map y -> N-2-y (x unchanged).  Self-inverse.
+    """
+    return policy[vert_policy_permutation(boardsize)].copy()
+
+
 if __name__ == "__main__":
     # Example usage
     state = State()

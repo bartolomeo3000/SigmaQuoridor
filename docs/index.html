@@ -312,7 +312,7 @@
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
       <span id="sims-display" style="font-size:12px;font-weight:600">1200</span>
     </div>
-    <input id="sims-slider" type="range" min="0" max="17" step="1" value="5"
+    <input id="sims-slider" type="range" min="0" max="18" step="1" value="6"
            style="width:100%;accent-color:#3fb950;cursor:pointer">
   </div>
 
@@ -376,7 +376,7 @@
       <span>Simulations</span>
       <span id="analysis-sims-display">1200</span>
     </div>
-    <input id="analysis-sims-slider" type="range" min="0" max="17" step="1" value="5"
+    <input id="analysis-sims-slider" type="range" min="0" max="18" step="1" value="6"
            style="width:100%;accent-color:#f85149;cursor:pointer;margin-bottom:8px">
     <button id="btn-run-mcts">&#x25B6; Run MCTS Analysis</button>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--muted);cursor:pointer">
@@ -1526,7 +1526,8 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
   });
 });
 function simsFromIndex(i) {
-  return i <= 9 ? (i + 1) * 200 : (i - 9) * 1000 + 2000;
+  if (i === 0) return 100;
+  return i <= 10 ? i * 200 : (i - 10) * 1000 + 2000;
 }
 document.getElementById('sims-slider').addEventListener('input', e => {
   numSimulations = simsFromIndex(Number(e.target.value));
