@@ -16,7 +16,7 @@ number of cycles:
                           produced), overwrites best.pt, saves a checkpoint,
                           appends a training_stats.csv row.
 
-Both scripts agree on the fixed paths MODEL_PATH (default models_9x9/best.pt)
+Both scripts agree on the fixed paths MODEL_PATH (default models_9x9_heads/best.pt)
 and DATA_DIR (default data_9x9_fix), overridable via --model-dir/--data-dir, so
 nothing needs to be passed between the two steps beyond those paths.
 
@@ -29,7 +29,7 @@ import os
 import subprocess
 import sys
 
-MODEL_PATH = "models_9x9/best.pt"
+MODEL_PATH = "models_9x9_heads/best.pt"
 DATA_DIR = "data_9x9_fix"
 
 

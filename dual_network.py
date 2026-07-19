@@ -9,16 +9,26 @@ Trunk
   R residual blocks (each: Conv→BN→ReLU→Conv→BN, skip-add→ReLU)
 
 Policy head — three spatial sub-heads, concatenated into raw logits:
-  ┌─ Pawn (8 logits):   global avg-pool → Linear(F → 8)
+  ┌─ Pawn (8 logits): two variants, selected by ``pawn_head``:
+  │    "local"  (default): gather trunk features at my/opponent pawn cells
+  │                (via input one-hot planes 0/1) + global mean → MLP → 8
+  │    "legacy": global avg-pool → Linear(F → 8)
   ├─ H-walls (W² logits): Conv2d(F→1, 1x1) → BN → ReLU
   │                         → slice [:, 0, :W, :W]  (W = N-1)
   │                         → flatten row-major
   └─ V-walls (W² logits): same structure
   → cat → (B, 8 + 2*W²) raw logits   [NO softmax — applied in NNEvaluator]
 
-Value head:
-  Conv2d(F→1, 1x1) → BN → ReLU → flatten → Linear(N²→64) → ReLU
-  → Linear(64→1) → tanh   → scalar in [-1, 1]
+Value head — two variants, selected by ``value_head``:
+  "pooled" (default): Conv2d(F→32,1x1) → BN → ReLU → mean+max pool → (B,64)
+                       → Linear(64→128) → ReLU → Linear(128→1) → tanh
+  "legacy":            Conv2d(F→1, 1x1) → BN → ReLU → flatten → Linear(N²→64)
+                       → ReLU → Linear(64→1) → tanh
+
+Both variants are self-describing: ``_infer_arch`` detects which one a saved
+checkpoint uses from the presence of its variant-specific keys, so
+``load_model`` reconstructs old and new checkpoints correctly without being
+told which kind a given file is. See HEAD_REDESIGN_PLAN.md.
 
 Policy head output order matches action_to_index() exactly:
   indices 0-7        : pawn directions (same order as ALL_PAWN_DIRECTIONS)
@@ -147,9 +157,18 @@ class DualNetwork(nn.Module):
                          KataGo-style GPoolResidualBlock instead of a plain
                          ResidualBlock. 0 disables (default, matches all
                          pre-existing checkpoints).
+    value_head   : str   "pooled" (default, new) or "legacy". See module
+                         docstring. Only affects fresh construction —
+                         load_model always reconstructs whichever variant a
+                         checkpoint was actually saved with.
+    pawn_head    : str   "local" (default, new) or "legacy". See module
+                         docstring.
     """
 
     IN_CHANNELS = 8  # channels produced by State.to_nn_input()
+    _VALUE_POOL_CHANNELS = 32
+    _VALUE_POOL_HIDDEN   = 128
+    _PAWN_LOCAL_HIDDEN   = 64
 
     def __init__(
         self,
@@ -157,12 +176,20 @@ class DualNetwork(nn.Module):
         filters:      int = 64,
         num_residual: int = 6,
         gpool_every:  int = 0,
+        value_head:   str = "pooled",
+        pawn_head:    str = "local",
     ) -> None:
         super().__init__()
+        if value_head not in ("pooled", "legacy"):
+            raise ValueError(f"value_head must be 'pooled' or 'legacy', got {value_head!r}")
+        if pawn_head not in ("local", "legacy"):
+            raise ValueError(f"pawn_head must be 'local' or 'legacy', got {pawn_head!r}")
         self.boardsize    = boardsize
         self.filters      = filters
         self.num_residual = num_residual
         self.gpool_every  = gpool_every
+        self.value_head   = value_head
+        self.pawn_head    = pawn_head
         N = boardsize
         W = N - 1   # wall-anchor grid side length
 
@@ -178,9 +205,18 @@ class DualNetwork(nn.Module):
         ])
 
         # ── Policy head ──────────────────────────────────────────────────────
-        # Pawn sub-head: global avg-pool preserves no spatial info (correct —
-        # direction legality depends on the whole board, not one cell)
-        self.policy_pawn_fc = nn.Linear(filters, 8)
+        if pawn_head == "local":
+            # Gather trunk features at my/opponent pawn cells (exact, via the
+            # input one-hot planes) plus a global-mean summary, then an MLP.
+            # Local features carry step/wall-adjacency context that a pure
+            # avg-pool discards; the opponent-cell feature matters mainly for
+            # jump/diagonal legality (relevant only when adjacent).
+            H_p = self._PAWN_LOCAL_HIDDEN
+            self.policy_pawn_fc1 = nn.Linear(3 * filters, H_p)
+            self.policy_pawn_fc2 = nn.Linear(H_p, 8)
+        else:
+            # Legacy: global avg-pool preserves no spatial info.
+            self.policy_pawn_fc = nn.Linear(filters, 8)
 
         # H-wall sub-head: 1×1 conv keeps all spatial information; we slice
         # the top-left W×W corner after conv (valid anchor coordinates are
@@ -193,10 +229,26 @@ class DualNetwork(nn.Module):
         self.policy_v_bn   = nn.BatchNorm2d(1)
 
         # ── Value head ───────────────────────────────────────────────────────
-        self.value_conv = nn.Conv2d(filters, 1, kernel_size=1, bias=False)
-        self.value_bn   = nn.BatchNorm2d(1)
-        self.value_fc1  = nn.Linear(N * N, 64)
-        self.value_fc2  = nn.Linear(64, 1)
+        if value_head == "pooled":
+            # KataGo-style: small conv + mean+max global pool feeds the FC,
+            # instead of squeezing the whole trunk through one spatial channel.
+            C_v = self._VALUE_POOL_CHANNELS
+            H_v = self._VALUE_POOL_HIDDEN
+            self.value_conv    = nn.Conv2d(filters, C_v, kernel_size=1, bias=False)
+            self.value_bn      = nn.BatchNorm2d(C_v)
+            self.value_pool_fc = nn.Linear(2 * C_v, H_v)
+            self.value_fc2     = nn.Linear(H_v, 1)
+            # value_fc1 (legacy) is board-size-specific (N*N in_features); the
+            # pooled head has no such tensor, so boardsize can no longer be
+            # inferred from a weight shape. Serialize it explicitly instead —
+            # only pooled-head checkpoints carry this key, so it can't clash
+            # with (or be required by) legacy checkpoints saved before it existed.
+            self.register_buffer("boardsize_marker", torch.tensor(boardsize))
+        else:
+            self.value_conv = nn.Conv2d(filters, 1, kernel_size=1, bias=False)
+            self.value_bn   = nn.BatchNorm2d(1)
+            self.value_fc1  = nn.Linear(N * N, 64)
+            self.value_fc2  = nn.Linear(64, 1)
 
     # ------------------------------------------------------------------
     def forward(
@@ -215,32 +267,55 @@ class DualNetwork(nn.Module):
         B = x.size(0)
         N = self.boardsize
         W = N - 1
+        x_in = x   # raw input, needed by the "local" pawn head (captured before
+                   # the trunk overwrites x below); planes 0/1 are the my/opponent
+                   # pawn one-hot planes (see State.to_nn_input()).
 
         # ── Trunk ────────────────────────────────────────────────────────────
         x = F.relu(self.bn(self.conv(x)))   # (B, F, N, N)
         x = self.residuals(x)               # (B, F, N, N)
+        trunk = x
 
         # ── Policy head ──────────────────────────────────────────────────────
-        # Pawn: global average pool → (B, F) → FC → (B, 8)
-        p_pawn = x.mean(dim=(2, 3))             # (B, F)
-        p_pawn = self.policy_pawn_fc(p_pawn)    # (B, 8)
+        if self.pawn_head == "local":
+            # Exact differentiable gather at the one-hot pawn cell via
+            # mask-multiply-and-sum (mask has a single 1.0, so the sum equals
+            # the trunk feature vector at that cell) + a global-mean summary.
+            my_mask   = x_in[:, 0:1]                        # (B,1,N,N)
+            opp_mask  = x_in[:, 1:2]                        # (B,1,N,N)
+            feat_my   = (trunk * my_mask ).sum(dim=(2, 3))  # (B,F) at my pawn
+            feat_opp  = (trunk * opp_mask).sum(dim=(2, 3))  # (B,F) at opp pawn
+            feat_glob = trunk.mean(dim=(2, 3))              # (B,F) global context
+            p_pawn = torch.cat([feat_my, feat_opp, feat_glob], dim=1)  # (B,3F)
+            p_pawn = self.policy_pawn_fc2(F.relu(self.policy_pawn_fc1(p_pawn)))  # (B,8)
+        else:
+            # Legacy: global average pool → (B, F) → FC → (B, 8)
+            p_pawn = trunk.mean(dim=(2, 3))         # (B, F)
+            p_pawn = self.policy_pawn_fc(p_pawn)    # (B, 8)
 
         # H-walls: 1×1 conv → slice W×W anchor region → flatten → (B, W²)
-        h = F.relu(self.policy_h_bn(self.policy_h_conv(x)))  # (B, 1, N, N)
-        h = h[:, 0, :W, :W].contiguous().view(B, -1)         # (B, W²)
+        h = F.relu(self.policy_h_bn(self.policy_h_conv(trunk)))  # (B, 1, N, N)
+        h = h[:, 0, :W, :W].contiguous().view(B, -1)             # (B, W²)
 
         # V-walls: identical
-        v = F.relu(self.policy_v_bn(self.policy_v_conv(x)))  # (B, 1, N, N)
-        v = v[:, 0, :W, :W].contiguous().view(B, -1)         # (B, W²)
+        v = F.relu(self.policy_v_bn(self.policy_v_conv(trunk)))  # (B, 1, N, N)
+        v = v[:, 0, :W, :W].contiguous().view(B, -1)             # (B, W²)
 
         # Concatenate in the same order as action_to_index()
         policy_logits = torch.cat([p_pawn, h, v], dim=1)     # (B, 8+2*W²)
 
         # ── Value head ──────────────────────────────────────────────────────
-        val = F.relu(self.value_bn(self.value_conv(x)))  # (B, 1, N, N)
-        val = val.view(B, -1)                            # (B, N²)
-        val = F.relu(self.value_fc1(val))                # (B, 64)
-        val = torch.tanh(self.value_fc2(val))            # (B, 1)
+        if self.value_head == "pooled":
+            val = F.relu(self.value_bn(self.value_conv(trunk)))   # (B, C_v, N, N)
+            val = torch.cat([val.mean(dim=(2, 3)),
+                             val.amax(dim=(2, 3))], dim=1)        # (B, 2*C_v)
+            val = F.relu(self.value_pool_fc(val))                 # (B, H_v)
+            val = torch.tanh(self.value_fc2(val))                 # (B, 1)
+        else:
+            val = F.relu(self.value_bn(self.value_conv(trunk)))  # (B, 1, N, N)
+            val = val.view(B, -1)                                # (B, N²)
+            val = F.relu(self.value_fc1(val))                    # (B, 64)
+            val = torch.tanh(self.value_fc2(val))                # (B, 1)
 
         return policy_logits, val
 
@@ -381,17 +456,22 @@ def save_model(model: DualNetwork, path: str) -> None:
     os.replace(tmp, path)
 
 
-def _infer_arch(state_dict: dict) -> tuple[int, int, int, int]:
+def _infer_arch(state_dict: dict) -> tuple[int, int, int, int, str, str]:
     """
-    Infer (filters, num_residual, boardsize, gpool_every) from a saved state
-    dict so that checkpoints can be loaded without knowing the architecture
-    upfront.
+    Infer (filters, num_residual, boardsize, gpool_every, value_head, pawn_head)
+    from a saved state dict so that checkpoints can be loaded without knowing
+    the architecture upfront.
 
     Derivations
     -----------
     * filters      — output channels of the first conv layer
     * num_residual — number of ResidualBlock entries in 'residuals.*'
-    * boardsize    — value_fc1 maps N² → 64, so boardsize = sqrt(in_features)
+    * value_head   — "pooled" if 'value_pool_fc.weight' is present, else "legacy"
+    * pawn_head    — "local" if 'policy_pawn_fc1.weight' is present, else "legacy"
+    * boardsize    — legacy value head: value_fc1 maps N² → 64, so
+                     boardsize = sqrt(in_features). The pooled value head has
+                     no board-size-shaped tensor, so it instead carries an
+                     explicit 'boardsize_marker' buffer, checked first.
     * gpool_every  — position of the first block with a 'gpool_fc' key (+1);
                      0 when no gpool blocks are present
     """
@@ -400,13 +480,18 @@ def _infer_arch(state_dict: dict) -> tuple[int, int, int, int]:
         1 for k in state_dict
         if k.startswith("residuals.") and k.endswith(".conv1.weight")
     )
-    boardsize = int(math.sqrt(state_dict["value_fc1.weight"].shape[1]))
+    value_head = "pooled" if "value_pool_fc.weight" in state_dict else "legacy"
+    pawn_head  = "local"  if "policy_pawn_fc1.weight" in state_dict else "legacy"
+    if "boardsize_marker" in state_dict:
+        boardsize = int(state_dict["boardsize_marker"].item())
+    else:
+        boardsize = int(math.sqrt(state_dict["value_fc1.weight"].shape[1]))
     gpool_idx = [
         int(k.split(".")[1]) for k in state_dict
         if k.startswith("residuals.") and k.endswith(".gpool_fc.weight")
     ]
     gpool_every = (min(gpool_idx) + 1) if gpool_idx else 0
-    return filters, num_residual, boardsize, gpool_every
+    return filters, num_residual, boardsize, gpool_every, value_head, pawn_head
 
 
 def load_model(path: str, device: torch.device | None = None) -> DualNetwork:
@@ -419,15 +504,57 @@ def load_model(path: str, device: torch.device | None = None) -> DualNetwork:
     # Training checkpoints wrap the model state under "model_state"
     if "model_state" in sd:
         sd = sd["model_state"]
-    filters, num_residual, boardsize, gpool_every = _infer_arch(sd)
+    filters, num_residual, boardsize, gpool_every, value_head, pawn_head = _infer_arch(sd)
     model = DualNetwork(
         boardsize    = boardsize,
         filters      = filters,
         num_residual = num_residual,
         gpool_every  = gpool_every,
+        value_head   = value_head,
+        pawn_head    = pawn_head,
     ).to(dev)
     model.load_state_dict(sd)
     return model
+
+
+def warm_start_from_legacy(
+    old_path:   str,
+    value_head: str = "pooled",
+    pawn_head:  str = "local",
+    device:     torch.device | None = None,
+) -> DualNetwork:
+    """
+    Load *old_path* and build a new ``DualNetwork`` with the same trunk
+    hyperparameters but the given (presumably new) head variants, transferring
+    every tensor whose key AND shape are unchanged (trunk conv/BN/residuals,
+    wall sub-heads) and leaving the changed/new head tensors at their fresh
+    initialization.
+
+    Used to start a head-redesign experiment from an existing trained net
+    without discarding the trunk. See HEAD_REDESIGN_PLAN.md.
+    """
+    dev = device or DEVICE
+    old = load_model(old_path, device=dev)
+    new = DualNetwork(
+        boardsize    = old.boardsize,
+        filters      = old.filters,
+        num_residual = old.num_residual,
+        gpool_every  = old.gpool_every,
+        value_head   = value_head,
+        pawn_head    = pawn_head,
+    ).to(dev)
+
+    old_sd = old.state_dict()
+    new_sd = new.state_dict()
+    copied = [k for k, v in old_sd.items() if k in new_sd and new_sd[k].shape == v.shape]
+    for k in copied:
+        new_sd[k] = old_sd[k]
+    new.load_state_dict(new_sd)
+
+    fresh = sorted(set(new_sd) - set(copied))
+    print(f"warm-started {len(copied)}/{len(new_sd)} tensors from {old_path}")
+    print(f"freshly initialized ({len(fresh)}): {fresh}")
+    return new
 
 
 def make_nn_evaluator(

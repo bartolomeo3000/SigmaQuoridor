@@ -1,0 +1,3 @@
+rank,model,elo,wins,draws,losses,games,score_pct
+1,models_9x9_heads\best.pt,1549.66,633,43,348,1024,63.92
+2,models_9x9\best.pt,1450.34,348,43,633,1024,36.08

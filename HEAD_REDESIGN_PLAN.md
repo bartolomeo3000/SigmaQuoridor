@@ -1,8 +1,100 @@
-# Value + pawn head redesign — implementation plan (NOT YET IMPLEMENTED)
+# Value + pawn head redesign — IMPLEMENTED 2026-07-19
 
-Design doc only. Nothing here is built yet. Scope is confined to
-`dual_network.py` — **no C++ changes, no extension rebuild** (the C++ engine only
-ships the 8 input planes and receives `(logits, value)`).
+Implemented as designed. Scope stayed confined to `dual_network.py` plus thin
+CLI plumbing in `train.py`/`selfplay_cpp.py` — no C++ changes, no extension
+rebuild (the C++ engine only ships the 8 input planes and receives
+`(logits, value)`; confirmed by a live `selfplay_cpp.py` smoke run against the
+new net).
+
+## What actually shipped
+
+- `DualNetwork` takes `value_head="pooled"|"legacy"` and `pawn_head="local"|"legacy"`
+  (defaults: the new variants — sections 1/2 below, built exactly as specced).
+- `_infer_arch`/`load_model` detect the variant from state-dict keys and add a
+  `boardsize_marker` buffer (only on pooled-head nets) so boardsize inference
+  no longer depends on `value_fc1`. Verified: `models_9x9/best.pt` (cycle 359,
+  pre-redesign) still loads as `legacy`/`legacy` unchanged.
+- `dual_network.warm_start_from_legacy(old_path, value_head, pawn_head)` — the
+  partial-load helper from section 4/Option A. Copies every tensor whose key
+  and shape are unchanged (trunk + wall sub-heads), leaves the rest freshly
+  initialized. On the real net: **161/174 tensors copied**, 13 fresh (the two
+  changed heads + the new marker). New param count: 2,909,869 vs 2,878,575
+  legacy (**+1.09%** — "heads should add little", confirmed).
+- `init_head_redesign.py` — one-off script wrapping the above: warm-starts a
+  **new lineage** `models_9x9_heads/` (`best.pt` + `checkpoints/cycle_0000.pt`,
+  the latter built with a fresh Adam/`MultiStepLR` so `train.py --resume`
+  picks it up at cycle 0). `models_9x9`/`data_9x9_fix` is untouched.
+- `train.py`/`selfplay_cpp.py` gained `--value-head`/`--pawn-head` flags
+  (same "only affects fresh construction" caveat as `--filters`/`--res`/
+  `--gpool-every` already had — resuming requires matching flags, exactly the
+  pre-existing pattern, no new sharp edge). `_eval_worker`'s challenger
+  reconstruction and the pure-Python self-play worker path were updated too.
+- `test_head_redesign.py` — regression suite: old-checkpoint load, fresh-net
+  round-trip (incl. `boardsize_marker`), 4-way forward-shape check across head
+  variants, and the warm-start correctness checks above. All pass, alongside
+  unchanged `test_cpp_parity.py` and `test_canon_consistency.py`.
+
+## A/B result — 2026-07-19/20: new heads win decisively; now the default lineage
+
+Rather than a fresh self-play buffer, `models_9x9_heads` was warm-trained
+directly on the existing `data_9x9_fix` canonical-frame buffer (no new
+self-play needed — the 8-plane input encoding is architecture-agnostic, so the
+existing policy/value targets are valid supervised data for any head shape):
+
+1. `--train-only` on `data_9x9_fix` for a handful of cycles (default
+   `recency_decay=0.92`, `buffer_cycles=30`) — loss converged to legacy
+   parity (~1.13) within 3 cycles, confirming the warm-started trunk only
+   needed the two changed heads to catch up.
+2. Then `--recency-decay 1.0 --buffer-cycles 50` (added as new CLI flags,
+   see below) for several more cycles to get a less recency-skewed fit over
+   the full buffer, since repeatedly resampling a *static* buffer with the
+   default recency bias over many cycles over-weights the same subset every
+   time (unlike normal self-play, where the favoured window shifts as fresh
+   cycles keep arriving) — loss rose transiently (broader distribution) then
+   re-converged below legacy parity (1.1229 vs legacy's 1.1338).
+3. Finally 2 more cycles back on default settings (recency-biased toward the
+   newest/highest-quality data) to sharpen the fit before evaluating.
+
+**Tournament** (`tournament_cpp.py`, 1024 games, 800 sims, `--boardsize 9
+--walls 10` — required explicitly, the script's own defaults are the old 7x7
+lineage's 7/5): `models_9x9_heads/best.pt` vs `models_9x9/best.pt` (cycle
+359, legacy heads) — **1549.7 vs 1450.3 Elo, 63.9% score (633W/43D/348L)**.
+Decisive win.
+
+**`train.py` gained two more CLI flags** during this process (both default to
+the pre-existing hardcoded constants, so unrelated runs are unaffected):
+`--recency-decay F` (overrides `BUFFER_RECENCY_DECAY`) and `--buffer-cycles N`
+(overrides `BUFFER_CYCLES`). Also fixed a pre-existing (unrelated) bug found
+along the way: `_Tee.write` crashed the whole run with `UnicodeEncodeError`
+when the Windows console couldn't encode a `→` in a log line — now degrades
+gracefully to the console while the UTF-8 log file keeps the exact text.
+
+**`models_9x9_heads` is now the default lineage** — updated in:
+- `train.py` (`MODEL_DIR`), `cpp_train_loop.py` (`MODEL_PATH`) — `DATA_DIR`
+  stays `data_9x9_fix` on purpose (still valid, no reason to fork the buffer).
+- `app.py` (`MODEL_DIR`, serving default).
+- `export_onnx.py` (9x9 lineage source path + checkpoint-export source dir;
+  output paths under `docs/models_9x9/` are unchanged, so the browser
+  frontend's `defaultModel`/checkpoint-picker entries keep working with zero
+  JS changes — confirmed `docs/mcts_worker.js` only reads the `policy_logits`/
+  `value` output tensors generically, no architecture-specific assumptions).
+- Re-exported `docs/models_9x9/best.onnx` from the new net and verified
+  numerically against the PyTorch model via `onnx.reference.ReferenceEvaluator`
+  (no `onnxruntime` install needed) — max diff 2.5e-6 (policy), 1.5e-8 (value),
+  pure fp32 noise. Fully compatible with both the Python app and the JS/ONNX
+  browser frontend.
+- `models_9x9`/its checkpoints are left untouched as the frozen legacy
+  reference (also what `test_head_redesign.py`/`test_canon_consistency.py`
+  test against, deliberately).
+
+Not touched: `docs/index.html`'s hardcoded legacy-cycle picker entries (e.g.
+"Cycle 339", "Cycle 321", ...) still point at already-exported, still-valid
+legacy onnx files — nothing broke, they just represent the old lineage's
+history. Only "best (latest)" needed to (and does) point at the new net.
+
+---
+
+Original design notes follow (kept for rationale/reference).
 
 ## Current state (as of 2026-07-19)
 

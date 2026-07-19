@@ -21,7 +21,7 @@ EXPORTS = [
     ("models_7x7/best.pt",              "docs/models/best.onnx"),
     ("models_7x7/supervised.pt",         "docs/models/supervised.onnx"),
     ("models_7x7/supervised_extended.pt","docs/models/supervised_extended.onnx"),
-    ("models_9x9/best.pt",               "docs/models_9x9/best.onnx"),
+    ("models_9x9_heads/best.pt",          "docs/models_9x9/best.onnx"),
 ]
 
 # Dynamically add checkpoint exports.
@@ -38,7 +38,7 @@ if _ck_src.exists():
 # sized. Bump CKPT_STEP down (or add specific cycles to _ck_extra) if you
 # want a denser checkpoint history in the browser picker.
 CKPT_STEP = 20
-_ck9_src = Path("models_9x9/checkpoints")
+_ck9_src = Path("models_9x9_heads/checkpoints")
 _ck9_dst = Path("docs/models_9x9/checkpoints")
 if _ck9_src.exists():
     _ck9_dst.mkdir(parents=True, exist_ok=True)

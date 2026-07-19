@@ -157,7 +157,7 @@ EVAL_OPPONENTS: list[tuple[str, int, dict]] = [
 ]
 
 # Paths
-MODEL_DIR      = "models_9x9"                               # model checkpoints and best.pt weights
+MODEL_DIR      = "models_9x9_heads"                         # model checkpoints and best.pt weights
 MODEL_PATH     = os.path.join(MODEL_DIR, "best.pt")         # inference weights only
 LOG_DIR        = "logs"                                     # per-run console transcripts
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")     # full training state
@@ -587,6 +587,7 @@ def _worker_play_game(args: tuple):
     """
     (
         weights, boardsize, filters, num_residual, gpool_every,
+        value_head, pawn_head,
         walls, num_sims,
         c_puct, dirichlet_alpha, dirichlet_epsilon,
         dist_bonus_weight_max, n_workers,
@@ -600,7 +601,7 @@ def _worker_play_game(args: tuple):
 
     device = torch.device("cpu")
     model = DualNetwork(boardsize=boardsize, filters=filters, num_residual=num_residual,
-                        gpool_every=gpool_every)
+                        gpool_every=gpool_every, value_head=value_head, pawn_head=pawn_head)
     model.load_state_dict(weights)
     model.to(device)
     model.eval()
@@ -656,6 +657,7 @@ def collect_cycle_data(
     task_args = [
         (
             weights, boardsize, model.filters, model.num_residual, model.gpool_every,
+            model.value_head, model.pawn_head,
             walls, num_sims,
             c_puct, dirichlet_alpha, dirichlet_epsilon,
             DIST_BONUS_WEIGHT_MAX, n_workers,
@@ -964,6 +966,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gpool-every", type=int, default=GPOOL_EVERY,   metavar="N",
                    help="every k-th residual block is a KataGo-style global-"
                         "pooling block (0 = none); only affects fresh model creation")
+    p.add_argument("--buffer-cycles", type=int, default=BUFFER_CYCLES, metavar="N",
+                   help=f"keep positions from this many recent self-play cycle files "
+                        f"(default: {BUFFER_CYCLES})")
+    p.add_argument("--recency-decay", type=float, default=BUFFER_RECENCY_DECAY, metavar="F",
+                   help=f"per-cycle sampling weight decay; 1.0 = uniform over the whole "
+                        f"buffer, lower = more recency-biased (default: {BUFFER_RECENCY_DECAY}). "
+                        f"Lower this toward 1.0 when running many training-only cycles over a "
+                        f"buffer that isn't growing (e.g. no self-play), since a static buffer "
+                        f"means the same recency-favoured subset gets resampled every cycle "
+                        f"instead of the favoured window shifting as fresh data arrives.")
+    p.add_argument("--value-head", choices=["pooled", "legacy"], default="pooled",
+                   help="value head variant; only affects fresh model creation "
+                        "(resuming/loading always reconstructs whichever variant "
+                        "the checkpoint was saved with — see dual_network._infer_arch)")
+    p.add_argument("--pawn-head", choices=["local", "legacy"], default="local",
+                   help="pawn policy sub-head variant; only affects fresh model "
+                        "creation, same caveat as --value-head")
     p.add_argument("--bf16",   action="store_true",
                    help="bfloat16 autocast for the training forward/backward pass "
                         "(CUDA only; fp32 master weights/optimizer state unaffected)")
@@ -1010,6 +1029,7 @@ _STATS_COLUMNS = [
     "learning_rate", "weight_decay", "value_loss_weight",
     "lr_milestones", "lr_decay",
     "filters", "num_residual", "gpool_every", "num_workers",
+    "value_head", "pawn_head",
 ]
 
 
@@ -1079,9 +1099,10 @@ def _eval_worker(args: tuple) -> int:
 
     # Build challenger (reconstruct architecture from weight shapes, same as load_model).
     from dual_network import _infer_arch
-    _filters, _res, _bs, _gpool_every = _infer_arch(challenger_sd)
+    _filters, _res, _bs, _gpool_every, _value_head, _pawn_head = _infer_arch(challenger_sd)
     challenger_model = DualNetwork(boardsize=_bs, filters=_filters, num_residual=_res,
-                                  gpool_every=_gpool_every).to(device)
+                                  gpool_every=_gpool_every, value_head=_value_head,
+                                  pawn_head=_pawn_head).to(device)
     challenger_model.load_state_dict(challenger_sd)
     challenger_model.eval()
     challenger = MCTSAgent(
@@ -1308,7 +1329,16 @@ class _Tee:
     def write(self, data: str) -> int:
         self._log_file.write(data)
         self._log_file.flush()
-        return self._stream.write(data)
+        try:
+            return self._stream.write(data)
+        except UnicodeEncodeError:
+            # The console stream's encoding (e.g. Windows cp1252) may not
+            # support every character some log messages use (e.g. arrows);
+            # the UTF-8 log file above already has the exact text, so degrade
+            # gracefully on the console instead of crashing the whole run.
+            encoding = getattr(self._stream, "encoding", None) or "ascii"
+            safe = data.encode(encoding, errors="replace").decode(encoding)
+            return self._stream.write(safe)
 
     def flush(self) -> None:
         self._log_file.flush()
@@ -1367,6 +1397,8 @@ def main() -> None:
         filters      = args.filters,
         num_residual = args.res,
         gpool_every  = args.gpool_every,
+        value_head   = args.value_head,
+        pawn_head    = args.pawn_head,
     ).to(DEVICE)
 
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=WEIGHT_DECAY)
@@ -1374,7 +1406,7 @@ def main() -> None:
 
     start_cycle = 0
 
-    buffer = ReplayBuffer(maxcycles=BUFFER_CYCLES)
+    buffer = ReplayBuffer(maxcycles=args.buffer_cycles)
 
     if args.resume:
         latest_ckpt = _latest_checkpoint(CHECKPOINT_DIR)
@@ -1419,7 +1451,7 @@ def main() -> None:
     print(f"Action space: {action_space_size(BOARDSIZE)}")
     print(f"Games/cycle: {args.games}  MCTS sims: {args.sims}  "
           f"Train positions/cycle: {args.train_positions:,}  Batch: {args.batch}")
-    print(f"Buffer: {BUFFER_CYCLES} cycles  |  "
+    print(f"Buffer: {args.buffer_cycles} cycles  |  "
           f"Cycles planned: {start_cycle} → {start_cycle + args.cycles}")
     print()
 
@@ -1493,9 +1525,9 @@ def main() -> None:
             print(f"Buffer too small ({buffer.size()} < {MIN_BUFFER_SIZE}), skipping.")
         else:
             train_steps = max(1, args.train_positions // args.batch)
-            buf_weights = buffer.sampling_weights(BUFFER_RECENCY_DECAY)
+            buf_weights = buffer.sampling_weights(args.recency_decay)
             print(f"Training ({train_steps} steps, {args.train_positions:,} positions, "
-                  f"batch={args.batch}, recency_decay={BUFFER_RECENCY_DECAY}) ...")
+                  f"batch={args.batch}, recency_decay={args.recency_decay}) ...")
             t0 = time.perf_counter()
             losses = run_training_phase(
                 model      = model,
@@ -1585,10 +1617,10 @@ def main() -> None:
                 "fpu_reduction":             FPU_REDUCTION,
                 "random_wall_plies":         RANDOM_WALL_PLIES,
                 "random_wall_fraction":      RANDOM_WALL_FRACTION,
-                "buffer_cycles":             BUFFER_CYCLES,
+                "buffer_cycles":             args.buffer_cycles,
                 "batch_size":               args.batch,
                 "train_positions_per_cycle": args.train_positions,
-                "buffer_recency_decay":      BUFFER_RECENCY_DECAY,
+                "buffer_recency_decay":      args.recency_decay,
                 "learning_rate":             args.lr,
                 "weight_decay":              WEIGHT_DECAY,
                 "value_loss_weight":         VALUE_LOSS_WEIGHT,
@@ -1598,6 +1630,8 @@ def main() -> None:
                 "num_residual":              args.res,
                 "gpool_every":               args.gpool_every,
                 "num_workers":               args.workers,
+                "value_head":                args.value_head,
+                "pawn_head":                 args.pawn_head,
             })
 
         print(f"Cycle {cycle + 1} complete in {cycle_time:.1f}s\n")

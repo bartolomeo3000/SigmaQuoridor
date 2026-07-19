@@ -105,6 +105,13 @@ def main() -> None:
                    help="every k-th residual block is a KataGo-style global-"
                         "pooling block (0 = none); only used for a fresh "
                         "random net (--model omitted)")
+    p.add_argument("--value-head", choices=["pooled", "legacy"], default="pooled",
+                   help="value head variant; only used for a fresh random net "
+                        "(--model omitted) — loading a checkpoint always "
+                        "reconstructs whichever variant it was saved with")
+    p.add_argument("--pawn-head", choices=["local", "legacy"], default="local",
+                   help="pawn policy sub-head variant; only used for a fresh "
+                        "random net (--model omitted), same caveat as --value-head")
     p.add_argument("--out-dir", type=str, default=None,
                    help="save cycle_NNNN.npz here (skip saving if omitted)")
     p.add_argument("--seed", type=int, default=0)
@@ -179,7 +186,8 @@ def main() -> None:
         print(f"loaded model {args.model}")
     else:
         model = DualNetwork(boardsize=args.boardsize, filters=args.filters,
-                            num_residual=args.res, gpool_every=args.gpool_every).to(device)
+                            num_residual=args.res, gpool_every=args.gpool_every,
+                            value_head=args.value_head, pawn_head=args.pawn_head).to(device)
         print("using fresh random network")
     model.eval()
     if args.compile:
