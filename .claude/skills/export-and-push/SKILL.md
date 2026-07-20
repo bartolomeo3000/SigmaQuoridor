@@ -13,6 +13,39 @@ unless the user explicitly asks for them in a given run.
 
 ## Steps
 
+0. **Regression gate — ALWAYS run this first, before exporting anything.** The training
+   loop has **no promotion gate**: `best.pt` is overwritten every cycle and just means
+   "latest," not "strongest." A drifted/regressed checkpoint has already been pushed to
+   the live site once this way. So before publishing, confirm the model about to be
+   exported does **not regress** against the one currently live on the site.
+
+   **First ask the user whether they've already checked this** (e.g. already ran a
+   tournament vs the previous best). If they say yes, skip straight to step 1. Otherwise
+   run at least a small head-to-head:
+
+   ```
+   # Recover the currently-LIVE model (the previously exported best.pt) from git,
+   # so we compare against exactly what's on the site right now:
+   git show HEAD:models_9x9_heads/best.pt > /tmp/prev_exported_best.pt
+
+   # Small regression tournament: new best.pt vs the previously-exported model.
+   # (--dir . globs no checkpoints at repo root, so only the two --extra models play.)
+   .venv/Scripts/python tournament_cpp.py --dir . \
+     --extra models_9x9_heads/best.pt \
+     --extra /tmp/prev_exported_best.pt \
+     --games 100 --temp 0.5 --sims 800 --boardsize 9 --walls 10 \
+     --threads 7 --parallel 512 --max-batch 512
+   ```
+
+   - Proceed to export **only if the new model is at least on par** (roughly ≥50% score,
+     i.e. no clear regression). If it's clearly worse, STOP and tell the user — the fix is
+     usually to promote a stronger earlier checkpoint to `best.pt` instead of exporting the
+     latest one, then re-run this gate.
+   - Scale games up (200–300/pair) if the 100-game result is close/ambiguous.
+   - Adjust `--parallel`/`--max-batch` down if RAM is tight while the user is on the machine.
+   - `tournament_cpp.py` does not checkpoint partial results — if it's killed, it must be
+     rerun from scratch.
+
 1. **Export ONNX.**
    ```
    .venv/Scripts/python export_onnx.py
