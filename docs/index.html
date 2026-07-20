@@ -310,9 +310,9 @@
     </div>
     <div id="sims-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
-      <span id="sims-display" style="font-size:12px;font-weight:600">800</span>
+      <span id="sims-display" style="font-size:12px;font-weight:600">100</span>
     </div>
-    <input id="sims-slider" type="range" min="0" max="39" step="1" value="33"
+    <input id="sims-slider" type="range" min="0" max="39" step="1" value="26"
            style="width:100%;accent-color:#3fb950;cursor:pointer">
   </div>
 
@@ -374,9 +374,9 @@
     <select id="analysis-model-select" class="agent-select" style="margin-bottom:8px"></select>
     <div class="mcts-sims-row">
       <span>Simulations</span>
-      <span id="analysis-sims-display">800</span>
+      <span id="analysis-sims-display">100</span>
     </div>
-    <input id="analysis-sims-slider" type="range" min="0" max="39" step="1" value="33"
+    <input id="analysis-sims-slider" type="range" min="0" max="39" step="1" value="26"
            style="width:100%;accent-color:#f85149;cursor:pointer;margin-bottom:8px">
     <button id="btn-run-mcts">&#x25B6; Run MCTS Analysis</button>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--muted);cursor:pointer">
@@ -452,7 +452,7 @@ let hoverCell      = null;
 let analysisHoverMove = null;
 let legalWallSet   = new Set();
 let gameMode       = 'hva';
-let numSimulations = 800;
+let numSimulations = 100;
 let minimaxDepth   = 3;
 let simpleRlId     = 'QLearningAgent';
 let selectedAgentId = 'alphazero';
@@ -1255,7 +1255,7 @@ function openNNPanel() {
 }
 
 // ── Analysis panel ────────────────────────────────────────────────────────────
-let analysisNumSims      = 800;
+let analysisNumSims      = 100;
 let analysisAgentId      = 'alphazero';
 let _analysisAgentManuallyChanged = false;
 let _analysisMctsRunning = false;
