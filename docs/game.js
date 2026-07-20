@@ -29,6 +29,30 @@ function actionToIndex(action, N) {
   return 8 + W * W + action.y * W + action.x;
 }
 
+// Vertical policy-frame permutation — mirrors Python vert_policy_permutation()
+// in game.py and vflip_action() in cpp/engine.hpp. The network sees a board
+// canonicalised to the current player's POV (vertically flipped for P2), so its
+// policy output is in that flipped frame. To read the logit for a REAL-board
+// action when it is P2's turn, look it up at perm[realIndex]. perm is an
+// involution (self-inverse). Pawn dirs: up<->down (and the up/down diagonal
+// pairs); wall anchors: y -> N-2-y (x unchanged).
+const _VERT_PAWN_FLIP = [1, 0, 2, 3, 6, 7, 4, 5];
+const _vpermCache = new Map();
+function vertPolicyPermutation(N) {
+  if (_vpermCache.has(N)) return _vpermCache.get(N);
+  const W = N - 1;
+  const perm = new Int32Array(actionSpaceSize(N));
+  for (let i = 0; i < 8; i++) perm[i] = _VERT_PAWN_FLIP[i];
+  for (let y = 0; y < W; y++) {
+    for (let x = 0; x < W; x++) {
+      perm[8 + y * W + x]         = 8 + (W - 1 - y) * W + x;          // H-walls
+      perm[8 + W * W + y * W + x] = 8 + W * W + (W - 1 - y) * W + x;  // V-walls
+    }
+  }
+  _vpermCache.set(N, perm);
+  return perm;
+}
+
 // ============================================================
 class State {
   /**

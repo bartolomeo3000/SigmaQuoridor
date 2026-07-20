@@ -1040,22 +1040,22 @@ const MODEL_LIST_7X7 = [
   { label: 'Cycle 1',   path: './models/checkpoints/cycle_0001.onnx' },
 ];
 
+// NOTE: only "full-canonical" nets (trained after the 2026-07-19 policy-frame
+// fix) belong here — the JS now un-flips P2's policy (see vertPolicyPermutation
+// in game.js). The pre-fix legacy checkpoints (≤ cycle 339) used the opposite
+// (real-frame) P2 convention, so serving them through the fixed JS would give a
+// vertically-scrambled P2 policy. They've been removed from this picker. The
+// entries below are all from the models_9x9_heads lineage; "best" is cycle 56,
+// the strongest in the diagnostic tournament.
 const MODEL_LIST_9X9 = [
-  { label: 'best  (latest)', path: './models_9x9/best.onnx' },
-  { label: 'Cycle 339', path: './models_9x9/checkpoints/cycle_0339.onnx' },
-  { label: 'Cycle 321', path: './models_9x9/checkpoints/cycle_0321.onnx' },
-  { label: 'Cycle 281', path: './models_9x9/checkpoints/cycle_0281.onnx' },
-  { label: 'Cycle 261', path: './models_9x9/checkpoints/cycle_0261.onnx' },
-  { label: 'Cycle 241', path: './models_9x9/checkpoints/cycle_0241.onnx' },
-  { label: 'Cycle 221', path: './models_9x9/checkpoints/cycle_0221.onnx' },
-  { label: 'Cycle 201', path: './models_9x9/checkpoints/cycle_0201.onnx' },
-  { label: 'Cycle 181', path: './models_9x9/checkpoints/cycle_0181.onnx' },
-  { label: 'Cycle 161', path: './models_9x9/checkpoints/cycle_0161.onnx' },
-  { label: 'Cycle 141', path: './models_9x9/checkpoints/cycle_0141.onnx' },
-  { label: 'Cycle 101', path: './models_9x9/checkpoints/cycle_0101.onnx' },
-  { label: 'Cycle 81',  path: './models_9x9/checkpoints/cycle_0081.onnx' },
-  { label: 'Cycle 61',  path: './models_9x9/checkpoints/cycle_0061.onnx' },
-  { label: 'Cycle 21',  path: './models_9x9/checkpoints/cycle_0021.onnx' },
+  { label: 'best  (heads cycle 56)', path: './models_9x9/best.onnx' },
+  { label: 'Heads cycle 164', path: './models_9x9/checkpoints/cycle_0164.onnx' },
+  { label: 'Heads cycle 161', path: './models_9x9/checkpoints/cycle_0161.onnx' },
+  { label: 'Heads cycle 141', path: './models_9x9/checkpoints/cycle_0141.onnx' },
+  { label: 'Heads cycle 121', path: './models_9x9/checkpoints/cycle_0121.onnx' },
+  { label: 'Heads cycle 101', path: './models_9x9/checkpoints/cycle_0101.onnx' },
+  { label: 'Heads cycle 81',  path: './models_9x9/checkpoints/cycle_0081.onnx' },
+  { label: 'Heads cycle 61',  path: './models_9x9/checkpoints/cycle_0061.onnx' },
 ];
 
 function currentModelList() {

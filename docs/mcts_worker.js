@@ -88,8 +88,18 @@ async function nnEvaluator(state, legalActions) {
     const logits = res.policy_logits.data;
     const value  = res.value.data[0];   // model already applies tanh
 
-    // Softmax over legal-action logits
-    const indices = legalActions.map(a => actionToIndex(a, N));
+    // Softmax over legal-action logits. The net outputs policy in the current
+    // player's canonical (P2-flipped) frame, so for P2 we must read each real
+    // action's logit at its vertically-permuted index (matches Python
+    // NNEvaluator._canon_indices / C++ vflip_action). Without this, P2's whole
+    // policy is vertically scrambled — pawn up<->down and walls on the wrong
+    // rows — which makes any full-canonical net play nonsense as P2.
+    const flip    = !state.isPlayer1Turn();
+    const vperm   = flip ? vertPolicyPermutation(N) : null;
+    const indices = legalActions.map(a => {
+      const idx = actionToIndex(a, N);
+      return flip ? vperm[idx] : idx;
+    });
     let maxL = -Infinity;
     for (const i of indices) if (logits[i] > maxL) maxL = logits[i];
     let sumE = 0;
