@@ -2,6 +2,13 @@
 
 The MCTS evaluator masks illegal moves before softmax. This script checks what
 the network itself outputs before that mask is applied.
+
+Canonicalization: the net emits policy in the current player's canonical
+(P2-vertically-flipped) frame, so a real-board action ``a`` for P2 is read at
+``vperm[action_to_index(a)]``, not ``action_to_index(a)``. This script applies
+that mapping (mirroring NNEvaluator) so the legal/illegal partition is correct
+for full-canonical nets. For pre-fix half-canonical nets (7x7, old 9x9 ≤339)
+the net was trained in the real frame; pass --half-canonical to skip the flip.
 """
 
 from __future__ import annotations
@@ -13,7 +20,27 @@ import numpy as np
 import torch
 
 from dual_network import load_model
-from game import State, action_space_size, action_to_index, index_to_action
+from game import (
+    State,
+    action_space_size,
+    action_to_index,
+    index_to_action,
+    vert_policy_permutation,
+)
+
+
+def _canon_legal_indices(state: State, boardsize: int, vperm: np.ndarray | None) -> np.ndarray:
+    """Logit indices of ``state``'s legal actions, in the network's output frame.
+
+    For P2 (when ``vperm`` is provided) each real action's index is mapped
+    through the vertical permutation to its canonical-frame position; for P1
+    (or half-canonical nets, ``vperm is None``) the raw index is used.
+    """
+    raw = np.array([action_to_index(a, boardsize) for a in state.get_legal_actions()],
+                   dtype=np.int64)
+    if vperm is not None and not state.is_player1_turn():
+        return vperm[raw]
+    return raw
 
 
 @dataclass
@@ -50,7 +77,8 @@ def sample_random_states(boardsize: int, walls: int, n_states: int, seed: int) -
     return states
 
 
-def sample_policy_states(model, boardsize: int, walls: int, n_states: int, seed: int, device: torch.device) -> list[State]:
+def sample_policy_states(model, boardsize: int, walls: int, n_states: int, seed: int,
+                         device: torch.device, vperm: np.ndarray | None) -> list[State]:
     rng = np.random.default_rng(seed)
     states: list[State] = []
     state = State(boardsize=boardsize, walls_p1=walls, walls_p2=walls)
@@ -62,7 +90,8 @@ def sample_policy_states(model, boardsize: int, walls: int, n_states: int, seed:
 
         states.append(state)
         actions = state.get_legal_actions()
-        indices = torch.tensor([action_to_index(a, boardsize) for a in actions], dtype=torch.long, device=device)
+        indices = torch.tensor(_canon_legal_indices(state, boardsize, vperm),
+                               dtype=torch.long, device=device)
         x = torch.from_numpy(state.to_nn_input()).unsqueeze(0).to(device)
         with torch.no_grad():
             logits, _ = model(x)
@@ -73,7 +102,8 @@ def sample_policy_states(model, boardsize: int, walls: int, n_states: int, seed:
     return states
 
 
-def analyze_states(model, states: list[State], device: torch.device) -> SampleStats:
+def analyze_states(model, states: list[State], device: torch.device,
+                   vperm: np.ndarray | None) -> SampleStats:
     if not states:
         raise ValueError("No states to analyze")
 
@@ -89,8 +119,7 @@ def analyze_states(model, states: list[State], device: torch.device) -> SampleSt
     top5_illegal_frac: list[float] = []
 
     for state in states:
-        legal_actions = state.get_legal_actions()
-        legal_idx = np.array([action_to_index(a, boardsize) for a in legal_actions], dtype=np.int64)
+        legal_idx = _canon_legal_indices(state, boardsize, vperm)
         legal_mask = np.zeros(n_actions, dtype=bool)
         legal_mask[legal_idx] = True
 
@@ -164,28 +193,34 @@ def show_initial_state_top(model, boardsize: int, walls: int, device: torch.devi
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze raw NN policy mass on illegal actions")
-    parser.add_argument("--model", default="models_7x7/supervised_extended.pt")
-    parser.add_argument("--boardsize", type=int, default=7)
-    parser.add_argument("--walls", type=int, default=5)
+    parser.add_argument("--model", default="models_9x9_heads/best.pt")
+    parser.add_argument("--boardsize", type=int, default=9)
+    parser.add_argument("--walls", type=int, default=10)
     parser.add_argument("--states", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--half-canonical", action="store_true",
+                        help="net was trained in the real (pre-fix) frame — skip the P2 "
+                             "policy un-flip (use for 7x7 / old 9x9 <=339 checkpoints)")
     args = parser.parse_args()
 
     device = torch.device(args.device)
     model = load_model(args.model, device=device)
     model.eval()
 
-    print(f"model     : {args.model}")
-    print(f"device    : {device}")
-    print(f"boardsize : {args.boardsize}")
-    print(f"walls     : {args.walls}")
+    vperm = None if args.half_canonical else vert_policy_permutation(args.boardsize)
+
+    print(f"model      : {args.model}")
+    print(f"device     : {device}")
+    print(f"boardsize  : {args.boardsize}")
+    print(f"walls      : {args.walls}")
+    print(f"canonical  : {'half (no P2 un-flip)' if args.half_canonical else 'full (P2 policy un-flipped)'}")
 
     random_states = sample_random_states(args.boardsize, args.walls, args.states, args.seed)
-    policy_states = sample_policy_states(model, args.boardsize, args.walls, args.states, args.seed + 1, device)
+    policy_states = sample_policy_states(model, args.boardsize, args.walls, args.states, args.seed + 1, device, vperm)
 
-    print_stats("Random legal states", analyze_states(model, random_states, device))
-    print_stats("States sampled from masked NN policy", analyze_states(model, policy_states, device))
+    print_stats("Random legal states", analyze_states(model, random_states, device, vperm))
+    print_stats("States sampled from masked NN policy", analyze_states(model, policy_states, device, vperm))
     show_initial_state_top(model, args.boardsize, args.walls, device)
 
     print("\nNote: MCTS/NNEvaluator applies softmax only over legal actions, so illegal moves get exactly zero prior after masking.")
