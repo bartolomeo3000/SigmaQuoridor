@@ -19,6 +19,18 @@ const START_MODEL_PATH = (() => {
   catch (_) { return DEFAULT_MODEL_PATH; }
 })();
 
+// Whether the loaded net is "full-canonical" (trained after the 2026-07-19
+// policy-frame fix). Only those need P2's policy un-flipped; pre-fix
+// "half-canonical" nets (all 7x7 models, and the retired 9x9 legacy
+// checkpoints) output P2 policy already in the real-board frame and must NOT
+// be un-flipped. The ONNX can't self-describe this, so we key on the model
+// directory: the active 9x9 lineage (models_9x9/) is full-canonical, and the
+// half-canonical 9x9 legacy checkpoints have been removed from the picker.
+function isFullCanonicalModel(path) {
+  return /models_9x9\b/.test(path || '');
+}
+let modelFullCanonical = isFullCanonicalModel(START_MODEL_PATH);
+
 // Configure ORT immediately after importScripts while ort is guaranteed defined.
 try {
   // WASM binaries are fetched from the CDN; credentials are not needed.
@@ -94,7 +106,7 @@ async function nnEvaluator(state, legalActions) {
     // NNEvaluator._canon_indices / C++ vflip_action). Without this, P2's whole
     // policy is vertically scrambled — pawn up<->down and walls on the wrong
     // rows — which makes any full-canonical net play nonsense as P2.
-    const flip    = !state.isPlayer1Turn();
+    const flip    = modelFullCanonical && !state.isPlayer1Turn();
     const vperm   = flip ? vertPolicyPermutation(N) : null;
     const indices = legalActions.map(a => {
       const idx = actionToIndex(a, N);
@@ -435,6 +447,7 @@ onmessage = async function (e) {
     try {
       if (ortSession) { try { await ortSession.release(); } catch (_) {} ortSession = null; }
       ortSession = await ort.InferenceSession.create(d.path, { executionProviders: ['wasm'] });
+      modelFullCanonical = isFullCanonicalModel(d.path);
       postMessage({ type: 'model_loaded' });
     } catch (err) {
       postMessage({ type: 'model_failed', reason: String(err.message || err) });
