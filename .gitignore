@@ -217,3 +217,7 @@ logs/
 
 # Vs Code settings
 .vscode/
+
+# Bookkeeping archive: post-cycle-56 heads checkpoints + self-play data moved
+# aside after cycle 56 was chosen as best (see BREAKTHROUGH/HEAD_REDESIGN notes).
+/_archive/
