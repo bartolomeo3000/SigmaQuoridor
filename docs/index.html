@@ -253,8 +253,8 @@
   <div class="card">
     <div class="card-label">Board</div>
     <div class="mode-btn-group">
-      <button class="board-btn active" data-board="7x7">7&times;7 (5 walls)</button>
-      <button class="board-btn" data-board="9x9">9&times;9 (10 walls)</button>
+      <button class="board-btn" data-board="7x7">7&times;7 (5 walls)</button>
+      <button class="board-btn active" data-board="9x9">9&times;9 (10 walls)</button>
     </div>
   </div>
 
@@ -408,7 +408,7 @@ const BOARD_VARIANTS = {
     simpleRlAvailable: false,
   },
 };
-let currentBoardVariant = '7x7';
+let currentBoardVariant = '9x9';
 function currentVariant() { return BOARD_VARIANTS[currentBoardVariant]; }
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -462,11 +462,11 @@ let _searchGen      = 0;
 let _nnAvailable    = false;
 let _agentManuallyChanged = false;
 let _nnLoadFailed   = false;
-let activeModelPath = './models/supervised_extended.onnx';
+let activeModelPath = './models_9x9/best.onnx';
 let _modelLoading   = false;
 let _analysisNnAvailable   = false;
 let _analysisNnLoadFailed  = false;
-let analysisModelPath      = './models/supervised_extended.onnx';
+let analysisModelPath      = './models_9x9/best.onnx';
 let _analysisModelLoading  = false;
 
 // ── Web Workers ──────────────────────────────────────────────────────────────
