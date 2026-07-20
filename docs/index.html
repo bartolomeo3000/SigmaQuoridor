@@ -310,9 +310,9 @@
     </div>
     <div id="sims-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
-      <span id="sims-display" style="font-size:12px;font-weight:600">1200</span>
+      <span id="sims-display" style="font-size:12px;font-weight:600">800</span>
     </div>
-    <input id="sims-slider" type="range" min="0" max="18" step="1" value="6"
+    <input id="sims-slider" type="range" min="0" max="39" step="1" value="33"
            style="width:100%;accent-color:#3fb950;cursor:pointer">
   </div>
 
@@ -374,9 +374,9 @@
     <select id="analysis-model-select" class="agent-select" style="margin-bottom:8px"></select>
     <div class="mcts-sims-row">
       <span>Simulations</span>
-      <span id="analysis-sims-display">1200</span>
+      <span id="analysis-sims-display">800</span>
     </div>
-    <input id="analysis-sims-slider" type="range" min="0" max="18" step="1" value="6"
+    <input id="analysis-sims-slider" type="range" min="0" max="39" step="1" value="33"
            style="width:100%;accent-color:#f85149;cursor:pointer;margin-bottom:8px">
     <button id="btn-run-mcts">&#x25B6; Run MCTS Analysis</button>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--muted);cursor:pointer">
@@ -452,7 +452,7 @@ let hoverCell      = null;
 let analysisHoverMove = null;
 let legalWallSet   = new Set();
 let gameMode       = 'hva';
-let numSimulations = 1200;
+let numSimulations = 800;
 let minimaxDepth   = 3;
 let simpleRlId     = 'QLearningAgent';
 let selectedAgentId = 'alphazero';
@@ -1255,7 +1255,7 @@ function openNNPanel() {
 }
 
 // ── Analysis panel ────────────────────────────────────────────────────────────
-let analysisNumSims      = 1200;
+let analysisNumSims      = 800;
 let analysisAgentId      = 'alphazero';
 let _analysisAgentManuallyChanged = false;
 let _analysisMctsRunning = false;
@@ -1525,9 +1525,19 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
     }
   });
 });
+// Explicit sim-count levels, one per slider position (NOT evenly spaced in
+// value — fine (1-step) resolution from 1-20 where low-sim play differs move
+// to move, coarser above that). An index-based slider (uniform tick spacing,
+// non-uniform values via this lookup) is what gives exact integer control at
+// the low end while still reaching 5000 without an unusably long slider.
+const SIMS_LEVELS = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+  40, 50, 60, 70, 80, 90, 100,
+  200, 300, 400, 500, 600, 700, 800, 900, 1000,
+  2000, 3000, 4000, 5000,
+];
 function simsFromIndex(i) {
-  if (i === 0) return 100;
-  return i <= 10 ? i * 200 : (i - 10) * 1000 + 2000;
+  return SIMS_LEVELS[Math.max(0, Math.min(i, SIMS_LEVELS.length - 1))];
 }
 document.getElementById('sims-slider').addEventListener('input', e => {
   numSimulations = simsFromIndex(Number(e.target.value));
