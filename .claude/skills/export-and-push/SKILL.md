@@ -1,0 +1,71 @@
+---
+name: export-and-push
+description: Re-export ONNX models from the current best.pt checkpoints and push the model artifacts (ONNX files + best.pt + training_stats.csv) to origin, without touching self-play data or checkpoint history. Use when the user asks to "export onnx", "push the model", or "sync the model to the repo/frontend" after a training run.
+---
+
+# Export ONNX and push model artifacts
+
+This repeats the exact procedure used to publish a freshly-trained model to both the
+Python app and the JS/ONNX browser frontend (`docs/`), without dragging along the
+large, fast-churning self-play data (`data_*/*.npz`) or per-cycle training checkpoints
+(`models_*/checkpoints/*.pt`) — those are handled separately and should NOT be added here
+unless the user explicitly asks for them in a given run.
+
+## Steps
+
+1. **Export ONNX.**
+   ```
+   .venv/Scripts/python export_onnx.py
+   ```
+   This regenerates `docs/models*/best.onnx` and the curated checkpoint-history ONNX
+   files (see `export_onnx.py`'s `CKPT_STEP`) from whatever `best.pt` currently exists
+   in each lineage's model dir.
+
+2. **Check what changed.**
+   ```
+   git status --short docs/ models_9x9_heads/best.pt models_9x9_heads/training_stats.csv models_9x9/best.pt models_9x9/training_stats.csv models_7x7/best.pt models_7x7/training_stats.csv
+   ```
+   Only lineages with an actual training update will show diffs — that's expected and fine.
+
+3. **Watch for filename collisions across lineages.** `export_onnx.py` picks checkpoint
+   ONNX files by cycle number modulo `CKPT_STEP`, and different lineages can produce the
+   same filename (e.g. `cycle_0061.onnx`) for what is actually a *different* underlying
+   network. Before committing, grep `docs/index.html` for any hardcoded picker entries
+   that reference a filename you're about to overwrite:
+   ```
+   grep -n "cycle_0" docs/index.html
+   ```
+   If a modified/new file's name matches a picker entry that used to point at a
+   *different* lineage's history, flag it to the user and ask how to proceed (accept the
+   overwrite, rename to avoid collision, or skip that file) — don't decide silently, this
+   happened once already (models_9x9_heads export overwrote models_9x9-legacy picker
+   entries) and the resolution depends on whether the user still wants that old history
+   browsable.
+
+4. **Stage only the model-artifact files** — never use `git add -A`/`.` for this. Stage
+   exactly:
+   - `docs/**/*.onnx` files that actually changed (from `git status` in step 2)
+   - `models_<lineage>/best.pt` (the one(s) that changed)
+   - `models_<lineage>/training_stats.csv` (the one(s) that changed)
+
+   Do NOT stage:
+   - `data_*/*.npz` (self-play data — large, handled elsewhere)
+   - `models_*/checkpoints/*.pt` (per-cycle training checkpoints — large, not needed for
+     serving)
+
+5. **Commit** with a short message naming the lineage and cycle number reached, e.g.
+   `export onnx from latest models_9x9_heads best.pt (cycle N)`. If step 3 surfaced a
+   collision that the user asked to accept, mention that in the commit body.
+
+6. **Push** to the current branch's upstream (`git push origin <branch>` — this repo
+   serves its frontend from `gh-pages`, so that's usually the branch in play; confirm
+   with `git branch --show-current` if unsure).
+
+## Notes
+
+- This is a repeatable, low-risk push (model binaries + one CSV) — no source code
+  changes are involved. Still, if `git status` after export shows anything unexpected
+  (e.g. a lineage you didn't expect to have changed, or source files modified), stop and
+  check with the user before committing.
+- If `export_onnx.py`'s `EXPORTS` list or lineage defaults have changed since this skill
+  was written, re-read the script rather than trusting the exact paths above.
