@@ -82,6 +82,14 @@ def main() -> None:
                    help="forwarded to train.py --train-positions")
     p.add_argument("--batch", type=int, default=None,
                    help="forwarded to train.py --batch")
+    p.add_argument("--lr", type=float, default=None,
+                   help="forwarded to train.py --lr (Adam learning rate; set by hand per run)")
+    p.add_argument("--recency-decay", type=float, default=None,
+                   help="forwarded to train.py --recency-decay (per-cycle buffer sampling "
+                        "weight decay; higher = flatter/less recency-biased, 1.0 = uniform)")
+    p.add_argument("--buffer-cycles", type=int, default=None,
+                   help="forwarded to train.py --buffer-cycles (how many recent cycles of "
+                        "self-play data to keep in the replay buffer)")
 
     args = p.parse_args()
 
@@ -148,6 +156,12 @@ def main() -> None:
             train_cmd += ["--train-positions", str(args.train_positions)]
         if args.batch is not None:
             train_cmd += ["--batch", str(args.batch)]
+        if args.lr is not None:
+            train_cmd += ["--lr", str(args.lr)]
+        if args.recency_decay is not None:
+            train_cmd += ["--recency-decay", str(args.recency_decay)]
+        if args.buffer_cycles is not None:
+            train_cmd += ["--buffer-cycles", str(args.buffer_cycles)]
         if args.bf16:
             train_cmd.append("--bf16")
         subprocess.run(train_cmd, check=True)

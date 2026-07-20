@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import threading
 import time
@@ -67,7 +68,15 @@ class _Tee:
     def write(self, data: str) -> int:
         self._log_file.write(data)
         self._log_file.flush()
-        return self._stream.write(data)
+        try:
+            return self._stream.write(data)
+        except UnicodeEncodeError:
+            # Console encoding (e.g. Windows cp1252) can't encode the box-drawing
+            # chars in the results table; degrade gracefully instead of crashing
+            # the whole run after all games are already played.
+            encoding = getattr(self._stream, "encoding", None) or "ascii"
+            safe = data.encode(encoding, errors="replace").decode(encoding)
+            return self._stream.write(safe)
 
     def flush(self) -> None:
         self._log_file.flush()
@@ -236,6 +245,54 @@ def play_pair(args, i: int, j: int, agent_model_ids: list[int],
     return results
 
 
+# ── Partial-result checkpointing (survive a mid-run crash) ──────────────────
+#
+# Pairs are played sequentially, so we snapshot accumulated results after each
+# completed pair. A crash then loses at most the one in-flight pair instead of
+# the whole run. On restart the snapshot is reloaded and completed pairs are
+# skipped — but only if the roster/config signature matches, so a reused --out
+# with a different roster can't silently resume the wrong run.
+
+def _progress_path(out_path: str) -> str:
+    return str(Path(out_path).with_suffix(".progress.json"))
+
+
+def _run_signature(names, model_paths, agent_sims, args) -> dict:
+    return {
+        "roster": [[n, mp, int(s)] for n, mp, s in zip(names, model_paths, agent_sims)],
+        "games": args.games, "temp": args.temp, "c_puct": args.c_puct,
+        "fpu": args.fpu, "boardsize": args.boardsize, "walls": args.walls,
+        "max_moves": args.max_moves, "seed": args.seed,
+    }
+
+
+def _save_progress(path, signature, completed_pairs, game_results, game_log, elapsed) -> None:
+    # write-to-tmp + atomic replace, so a crash mid-write can't corrupt the file
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({
+            "signature": signature,
+            "completed_pairs": [list(p) for p in sorted(completed_pairs)],
+            "game_results": [[int(i), int(j), float(s)] for i, j, s in game_results],
+            "game_log": game_log,
+            "elapsed": elapsed,
+        }, f)
+    os.replace(tmp, path)
+
+
+def _load_progress(path, signature):
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if data.get("signature") != signature:
+        return "incompatible"
+    return data
+
+
 def main() -> None:
     args = parse_args()
     log_path = _start_run_log(LOG_DIR)
@@ -283,19 +340,41 @@ def main() -> None:
     print()
 
     t0 = time.time()
+    out_path = args.out or "tournament_cpp_results.csv"
+    progress_path = _progress_path(out_path)
+    signature = _run_signature(names, model_paths, agent_sims, args)
+
     game_results: list[tuple[int, int, float]] = []
     game_log: list[dict] = []
-    games_done_so_far = 0
+    completed_pairs: set[tuple[int, int]] = set()
+    elapsed_offset = 0.0
+
+    resumed = _load_progress(progress_path, signature)
+    if resumed == "incompatible":
+        print(f"Ignoring incompatible progress file {progress_path} "
+              f"(roster/config changed); starting fresh.\n")
+    elif resumed is not None:
+        game_results = [tuple(r) for r in resumed["game_results"]]
+        game_log = resumed["game_log"]
+        completed_pairs = {tuple(p) for p in resumed["completed_pairs"]}
+        elapsed_offset = float(resumed.get("elapsed", 0.0))
+        print(f"Resuming from {progress_path}: "
+              f"{len(completed_pairs)}/{n_pairs} pairs already complete "
+              f"({len(game_results)} games); replaying the rest.\n")
+
+    games_done_so_far = len(game_results)
 
     def _progress(pair_done: int) -> None:
         done = games_done_so_far + pair_done
-        elapsed = time.time() - t0
+        elapsed = elapsed_offset + (time.time() - t0)
         rate = done / elapsed if elapsed > 0 else 0.0
         eta = (total_games - done) / rate if rate > 0 else 0.0
         print(f"\r  {done:>{len(str(total_games))}}/{total_games}  "
               f"{elapsed:>6.0f}s elapsed  ETA {eta:>5.0f}s", end="", flush=True)
 
     for i, j in pairs:
+        if (i, j) in completed_pairs:
+            continue
         pair_results = play_pair(
             args, i, j, agent_model_ids, agent_num_simulations, agent_leaf_batch,
             agent_c_puct, agent_fpu_reduction, agent_temperature, models, device,
@@ -317,9 +396,12 @@ def main() -> None:
                 "result": result, "score_for_a": score, "plies": plies,
             })
         games_done_so_far += len(pair_results)
+        completed_pairs.add((i, j))
+        _save_progress(progress_path, signature, completed_pairs,
+                       game_results, game_log, elapsed_offset + (time.time() - t0))
         _progress(0)
 
-    elapsed = time.time() - t0
+    elapsed = elapsed_offset + (time.time() - t0)
     print(f"\n  All {total_games} games done in {elapsed:.1f}s "
           f"({elapsed / max(total_games, 1):.1f}s/game)\n")
 
@@ -351,7 +433,6 @@ def main() -> None:
               f"{score_pct[idx]:>6.1f}%")
     print(sep)
 
-    out_path = args.out or "tournament_cpp_results.csv"
     with open(out_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["rank", "model", "elo", "wins", "draws", "losses",
@@ -371,6 +452,11 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(game_log)
     print(f"Matchup details saved to {matchup_path}")
+
+    # Run finished cleanly — drop the resume snapshot so a later run with the
+    # same --out starts fresh instead of thinking this one is still in progress.
+    if os.path.exists(progress_path):
+        os.remove(progress_path)
 
 
 if __name__ == "__main__":
