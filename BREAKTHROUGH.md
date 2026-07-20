@@ -10,3 +10,6 @@ It also won at 1600 sims but lost at 800 or 1200.
 
 (19.07.2026) After the reversed policy fix, cycle 359 wins as P2 (and P1) at 800 sims!
 It even wins at 400 sims! Even at 200 sims it still won!
+
+(20.07.2026) After the heads redesign and supervised training on latest gathered data, a the NN came out so good, that it wins as P1 and P2 without MCTS! (equivalent to 1 sim, only the NN policy argmax played in each position)
+It won't get much better than that i guess. I mean it could, but there will be no way to evaluate progress besides self-play against older checkpoints. Since I can't beat the agent already and neither can the eval gorisanson bot.
