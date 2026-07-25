@@ -28,9 +28,9 @@ forward pass, playing the arg-max of the policy head, zero MCTS simulations.
 
 And that is its floor, not its ceiling. Hand it the search it was trained with and it pulls away
 from itself: playing at 100 simulations per move it beats the *same weights* running search-free
-in **84%** of games, and at 400 simulations in **88%** (200-game matches; the searching side
-samples its visit counts at temperature 0.5 so the games differ, while the searchless side always
-plays its policy arg-max).
+in **84%** of games — and the gains keep coming with depth: at 400 simulations it beats its own
+200-simulation self in **61%** (200-game matches; a searching side samples its visit counts at
+temperature 0.5 so the games differ, while the searchless side always plays its policy arg-max).
 
 Past that point, measuring progress gets awkward — neither I nor the reference bot can beat it
 any more, so there's no external yardstick left. Improvement is tracked instead by round-robin
