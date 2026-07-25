@@ -118,7 +118,7 @@ on an `(N-1)×(N-1)` grid — which is why a 9×9 board has `8×8×2 = 128` dist
 
 ### When a wall placement is illegal
 
-<img src="docs/screenshots/rules/wall_block.png" width="440" alt="A corridor formed by several walls">
+<img src="docs/screenshots/rules/wall_illegal.png" width="440" alt="A wall preview shown in red because it would seal the opposing pawn in">
 
 Four conditions, all enforced by `is_wall_legal`:
 
@@ -132,10 +132,17 @@ Four conditions, all enforced by `is_wall_legal`:
    route to their goal row. The engine checks this with a breadth-first search each time.
 
 Rule 4 is the one that makes Quoridor a game rather than a race: walls can lengthen a route as
-much as you like, but can never close it off. Note it protects **both** players — a wall that
-leaves *your opponent* with no path at all is just as illegal as one that traps you. In the
-position above, most of the board is fenced off and only a narrow corridor remains; any wall that
-would close the last gap is rejected, even though it overlaps nothing.
+much as you like, but can never close it off entirely.
+
+That's what the diagram shows. Two walls already box the red pawn in on the left and below, and
+the **dark red preview** marks the wall that would close the last side. It overlaps nothing and
+sits on a perfectly ordinary groove — it's rejected purely because it would leave red with no
+route to the bottom row at all, so the app refuses it before you can place it. (A legal placement
+previews in orange instead.)
+
+Note the rule protects **both** players: a wall that seals *your opponent* off is just as illegal
+as one that traps you. Boxing the opponent in is not a winning strategy — the most you can ever do
+is make their journey longer.
 
 ---
 
