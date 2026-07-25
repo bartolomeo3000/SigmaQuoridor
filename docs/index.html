@@ -153,6 +153,24 @@
     @keyframes thinking-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
     #status-text.thinking { animation: thinking-pulse 1.2s ease-in-out infinite; }
 
+    /* ── search progress (finished MCTS simulations) ── */
+    .sim-progress {
+      height: 4px;
+      margin-top: 8px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.07);
+      overflow: hidden;
+    }
+    .sim-progress > div {
+      height: 100%;
+      width: 0;
+      border-radius: 2px;
+      background: var(--muted);
+      transition: width 0.12s linear;
+    }
+    /* the analysis panel accents in red (sliders, checkboxes) — match it */
+    #analysis-progress > div { background: var(--red); }
+
     /* ── board column (board + nn panel stacked) ── */
     #board-col {
       display: flex;
@@ -161,9 +179,40 @@
       align-items: center;
     }
 
+    /* Board and its action row grouped so the row is exactly the board's width
+       and not the column's — the NN panel below can be wider than the board. */
+    #board-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #board-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    #board-actions button {
+      width: auto;
+      /* basis small enough that all five stay on one row at 7x7 (546px) and
+         9x9 (690px), but they wrap rather than crush if the board gets smaller */
+      flex: 1 1 100px;
+      padding: 9px 6px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
     /* ── NN channel viewer ── */
+    /* Absolute so its width never feeds back into #layout: the sidebar is
+       positioned at left: calc(100% + 32px) of #layout, so an in-flow panel
+       wider than the board (the numbered channels are 28px/cell) used to shove
+       the sidebar sideways every time this opened. Out of flow, it just unrolls
+       underneath everything and nothing else moves. `top` is refined in JS to
+       clear whichever side panel is currently tallest. */
     #nn-panel {
       display: none;
+      position: absolute;
+      top: calc(100% + 16px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: max-content;
+      max-width: calc(100vw - 48px);
+      overflow-x: auto;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 14px;
@@ -243,7 +292,9 @@
     .mcts-sims-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
     .mcts-sims-row span { font-size: 11px; color: var(--muted); flex: 1; }
     #analysis-sims-display { font-size: 12px; font-weight: 600; }
-    #btn-run-mcts.running { animation: thinking-pulse 1.2s ease-in-out infinite; pointer-events: none; }
+    /* while running, the progress bar below shows activity, so just dim the
+       button rather than also pulsing it */
+    #btn-run-mcts.running { opacity: 0.55; pointer-events: none; }
   </style>
 </head>
 <body>
@@ -277,6 +328,7 @@
     <div class="card-label">Status</div>
     <div id="status-text">Loading…</div>
     <div id="status-sub"></div>
+    <div id="think-progress" class="sim-progress" style="display:none"><div id="think-progress-fill"></div></div>
     <div id="status-ply" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
   </div>
 
@@ -313,16 +365,21 @@
            style="width:100%;accent-color:#3fb950;cursor:pointer">
   </div>
 
-  <button id="btn-reset">&#x21BA; New Game</button>
-  <button id="btn-undo">&#x21A9; Undo Move</button>
-  <button id="btn-flip">&#x21C5; Flip Board</button>
-  <button id="btn-nn">&#x1F9E0; NN Channels</button>
-  <button id="btn-analysis">&#x1F4CA; Analysis</button>
 </div>
 
 <div id="board-col">
-  <div id="board-wrap">
-    <canvas id="board"></canvas>
+  <div id="board-stack">
+    <div id="board-wrap">
+      <canvas id="board"></canvas>
+    </div>
+
+    <div id="board-actions">
+      <button id="btn-reset">&#x21BA; New Game</button>
+      <button id="btn-undo">&#x21A9; Undo Move</button>
+      <button id="btn-flip">&#x21C5; Flip Board</button>
+      <button id="btn-nn">&#x1F9E0; NN Channels</button>
+      <button id="btn-analysis">&#x1F4CA; Analysis</button>
+    </div>
   </div>
 
   <div id="nn-panel">
@@ -376,6 +433,7 @@
     <input id="analysis-sims-slider" type="range" min="0" max="39" step="1" value="26"
            style="width:100%;accent-color:#f85149;cursor:pointer;margin-bottom:8px">
     <button id="btn-run-mcts">&#x25B6; Run MCTS Analysis</button>
+    <div id="analysis-progress" class="sim-progress" style="display:none"><div></div></div>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--muted);cursor:pointer">
       <input type="checkbox" id="chk-auto-mcts" style="accent-color:#f85149;cursor:pointer">
       Auto-run on each move
@@ -452,6 +510,10 @@ let selectedAgentId = 'alphazero';
 let _agentList      = [];
 let agentThinking   = false;
 let _searchGen      = 0;
+let _thinkDone      = 0;   // simulations finished in the search we're waiting on
+let _thinkTotal     = 0;   // 0 = no countable progress (minimax), so no bar
+let _analysisDone   = 0;   // same, for the analysis panel's own MCTS run
+let _analysisTotal  = 0;
 let _nnAvailable    = false;
 let _agentManuallyChanged = false;
 let _nnLoadFailed   = false;
@@ -521,8 +583,19 @@ function handlePlayWorkerMessage(e) {
     return;
   }
 
+  if (d.type === 'progress') {
+    // Stale searches keep reporting until the worker notices the cancel, so
+    // gate on the generation the same way the 'move' reply does.
+    if (d.gen !== _searchGen || !agentThinking) return;
+    _thinkDone  = d.done;
+    _thinkTotal = d.total;
+    renderThinkProgress();
+    return;
+  }
+
   if (d.type === 'move') {
     agentThinking = false;
+    _thinkDone = 0; _thinkTotal = 0;
     if (d.gen !== _searchGen) return;
     if (!gameState || gameState.isFinished()) return;
     postMove(d.action);
@@ -569,14 +642,21 @@ function handleAnalysisWorkerMessage(e) {
     return;
   }
 
+  if (d.type === 'progress') {
+    if (d.gen !== _analysisGen || !_analysisMctsRunning) return;
+    _analysisDone  = d.done;
+    _analysisTotal = d.total;
+    renderAnalysisProgress();
+    return;
+  }
+
   if (d.type === 'mcts_result') {
     if (d.gen !== _analysisGen) return;
     if (d.nn) _analysisNnData = d.nn;
     _analysisMctsData = d;
     _analysisMctsRunning = false;
-    const btn = document.getElementById('btn-run-mcts');
-    btn.classList.remove('running');
-    btn.textContent = '\u25B6 Run MCTS Analysis';
+    document.getElementById('btn-run-mcts').classList.remove('running');
+    renderAnalysisProgress();
     renderAnalysis();
     return;
   }
@@ -808,7 +888,31 @@ function darken(hex, amt) {
 
 function currentAgentDetail() {
   if (selectedAgentId === 'minimax') return `${currentAgentName()} · depth ${minimaxDepth}`;
+  if (agentThinking && _thinkTotal > 0)
+    return `${currentAgentName()} · ${_thinkDone} / ${_thinkTotal} simulations`;
   return `${currentAgentName()} · ${numSimulations} simulations`;
+}
+
+// Bar + live count for the search we're waiting on. Kept separate from
+// updateSidebar() so a progress tick only touches these two nodes.
+function renderThinkProgress() {
+  const track = document.getElementById('think-progress');
+  const fill  = document.getElementById('think-progress-fill');
+  const show  = agentThinking && _thinkTotal > 0;
+  track.style.display = show ? '' : 'none';
+  if (!show) { fill.style.width = '0%'; return; }
+  fill.style.width = `${Math.min(100, 100 * _thinkDone / _thinkTotal)}%`;
+  document.getElementById('status-sub').textContent = currentAgentDetail();
+}
+
+// Same, for the analysis panel's MCTS run — this bar replaces what used to be
+// a "Running…" label on the button.
+function renderAnalysisProgress() {
+  const track = document.getElementById('analysis-progress');
+  const show  = _analysisMctsRunning && _analysisTotal > 0;
+  track.style.display = show ? '' : 'none';
+  track.firstElementChild.style.width =
+    show ? `${Math.min(100, 100 * _analysisDone / _analysisTotal)}%` : '0%';
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -822,6 +926,7 @@ function updateSidebar() {
   pe1.className = 'player-entry' + (state.current_player === 1 && !state.is_finished ? ' active-p1' : '');
   pe2.className = 'player-entry' + (state.current_player === 2 && !state.is_finished ? ' active-p2' : '');
   document.getElementById('status-ply').textContent = `Ply ${state.depth}`;
+  renderThinkProgress();
   const txt = document.getElementById('status-text');
   const sub = document.getElementById('status-sub');
   if (agentThinking) {
@@ -943,7 +1048,9 @@ function undoMove() {
   if (agentThinking) { _searchGen++; agentThinking = false; }
   const count     = gameMode === 'hvh' ? 1 : 2;
   const available = Math.min(count, gameHistory.length);
-  if (!available) return;
+  // Nothing to undo, but the search above was already cancelled — refresh so the
+  // status text and progress bar don't keep claiming the agent is thinking.
+  if (!available) { updateSidebar(); return; }
   for (let i = 0; i < available; i++) gameState = gameHistory.pop();
   applyState(gameState.serialize());
 }
@@ -981,6 +1088,8 @@ function isAgentTurn() {
 function triggerAgentMove() {
   if (!state || state.is_finished || !agentThinking) return;
   const gen = ++_searchGen;
+  _thinkDone  = 0;
+  _thinkTotal = selectedAgentId === 'minimax' ? 0 : numSimulations;
   updateSidebar();
   const w = getWorker();
   w.postMessage({
@@ -1215,6 +1324,29 @@ function openNNPanel() {
     renderChannel(cvs, matrix, ch >= 4 ? scales[ch] : 0);
   }
   document.getElementById('nn-panel').classList.add('open');
+  positionNNPanel();
+}
+
+// The side panels are absolutely positioned, so #layout's height only covers the
+// board column — either of them can hang lower than it. Push the NN panel below
+// the lowest of the three so it can never clip a corner of one.
+function positionNNPanel() {
+  const panel = document.getElementById('nn-panel');
+  if (!panel.classList.contains('open')) return;
+  const layout = document.getElementById('layout').getBoundingClientRect();
+  let bottom   = layout.height;
+  for (const id of ['sidebar', 'analysis-panel']) {
+    // A hidden panel measures as all-zeros, which loses the max on its own.
+    const r = document.getElementById(id).getBoundingClientRect();
+    bottom = Math.max(bottom, r.bottom - layout.top);
+  }
+  panel.style.top = `${Math.round(bottom) + 16}px`;
+  // It grows symmetrically from the board's centre, so its room is twice the
+  // smaller side gap — past that, scroll it internally rather than letting it
+  // overflow the page and reintroduce the sideways shove.
+  const centre = layout.left + layout.width / 2;
+  const room   = 2 * Math.min(centre - 24, window.innerWidth - centre - 24);
+  panel.style.maxWidth = `${Math.max(320, Math.round(room))}px`;
 }
 
 // ── Analysis panel ────────────────────────────────────────────────────────────
@@ -1329,6 +1461,9 @@ function renderAnalysis() {
     }
     container.appendChild(row);
   }
+  // Rows just added/removed change this panel's height, which the NN panel
+  // below is positioned against.
+  positionNNPanel();
 }
 
 function drawAnalysisHover(ctx) {
@@ -1370,11 +1505,11 @@ function playAnalysisMove(label) {
 
 function cancelAnalysisWork() {
   ++_analysisGen;
-  const btn = document.getElementById('btn-run-mcts');
-  btn.classList.remove('running');
-  btn.textContent = '\u25B6 Run MCTS Analysis';
-  if (!_analysisMctsRunning) return;
+  document.getElementById('btn-run-mcts').classList.remove('running');
+  const wasRunning = _analysisMctsRunning;
   _analysisMctsRunning = false;
+  renderAnalysisProgress();
+  if (!wasRunning) return;
   _analysisNnAvailable = false;
   _analysisNnLoadFailed = false;
   _analysisModelLoading = true;
@@ -1389,8 +1524,10 @@ function cancelAnalysisWork() {
 function runMctsAnalysis() {
   if (_analysisMctsRunning || !gameState || gameState.isFinished() || !_analysisNnAvailable) return;
   _analysisMctsRunning = true;
-  const btn = document.getElementById('btn-run-mcts');
-  btn.classList.add('running'); btn.textContent = '⏳ Running…';
+  document.getElementById('btn-run-mcts').classList.add('running');
+  _analysisDone  = 0;
+  _analysisTotal = analysisNumSims;
+  renderAnalysisProgress();
   const gen = ++_analysisGen;
   const w   = getAnalysisWorker();
   w.postMessage({
@@ -1421,9 +1558,8 @@ function switchBoardVariant(id) {
   agentThinking = false;
   _analysisGen++;
   _analysisMctsRunning = false;
-  const mctsBtn = document.getElementById('btn-run-mcts');
-  mctsBtn.classList.remove('running');
-  mctsBtn.textContent = '\u25B6 Run MCTS Analysis';
+  document.getElementById('btn-run-mcts').classList.remove('running');
+  renderAnalysisProgress();
   _analysisMctsData = null;
   _analysisNnData = null;
 
@@ -1521,7 +1657,9 @@ document.getElementById('btn-analysis').addEventListener('click', () => {
   const panel = document.getElementById('analysis-panel');
   if (panel.classList.contains('open')) panel.classList.remove('open');
   else openAnalysisPanel();
+  positionNNPanel();   // that panel's height is part of where the NN panel sits
 });
+window.addEventListener('resize', positionNNPanel);
 document.getElementById('analysis-sims-slider').addEventListener('input', e => {
   analysisNumSims = simsFromIndex(Number(e.target.value));
   document.getElementById('analysis-sims-display').textContent = analysisNumSims;

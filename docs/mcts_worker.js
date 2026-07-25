@@ -289,11 +289,14 @@ function selectLeaf(root) {
   return node;
 }
 
-async function runMCTS(state, numSims, evaluator, cancelToken) {
+async function runMCTS(state, numSims, evaluator, cancelToken, onProgress = null) {
   const root     = new MCTSNode(state);
   const initVal  = await expandNode(root, evaluator);
   if (cancelToken !== _activeTaskGen) return null;
   backup(root, initVal);
+  // Report at most ~40 times per search regardless of numSims: enough for a
+  // smooth bar, few enough that postMessage never becomes part of the cost.
+  const step = Math.max(1, Math.ceil(numSims / 40));
   for (let i = 0; i < numSims; i++) {
     if (cancelToken !== _activeTaskGen) return null;
     const leaf = selectLeaf(root);
@@ -306,12 +309,13 @@ async function runMCTS(state, numSims, evaluator, cancelToken) {
     }
     if (cancelToken !== _activeTaskGen) return null;
     backup(leaf, value);
+    if (onProgress && ((i + 1) % step === 0 || i + 1 === numSims)) onProgress(i + 1, numSims);
   }
   return root;
 }
 
-async function selectAction(state, numSims, evaluator, cancelToken) {
-  const root = await runMCTS(state, numSims, evaluator, cancelToken);
+async function selectAction(state, numSims, evaluator, cancelToken, onProgress = null) {
+  const root = await runMCTS(state, numSims, evaluator, cancelToken, onProgress);
   if (!root) return null;
   let best = null, bestCount = -1;
   for (const c of root.children) {
@@ -320,8 +324,8 @@ async function selectAction(state, numSims, evaluator, cancelToken) {
   return best ? best.action : (state.getLegalActions()[0] || null);
 }
 
-async function getPolicy(state, numSims, evaluator, cancelToken) {
-  const root = await runMCTS(state, numSims, evaluator, cancelToken);
+async function getPolicy(state, numSims, evaluator, cancelToken, onProgress = null) {
+  const root = await runMCTS(state, numSims, evaluator, cancelToken, onProgress);
   if (!root) return null;
   const total = root.children.reduce((s, c) => s + c.visitCount, 0);
   const rootQ = root.qValue;
@@ -383,8 +387,15 @@ onmessage = async function (e) {
   if (d.type === 'think') {
     const s      = stateFromMsg(d);
     let action;
-    if (d.agentId === 'minimax') action = selectMinimaxAction(s, Math.max(2, Math.min(8, d.minimaxDepth || 3)));
-    else action = await selectAction(s, numSims, evalFn, gen);
+    if (d.agentId === 'minimax') {
+      // Alpha-beta runs synchronously with no natural checkpoints, so it has no
+      // simulation count to report — the main thread shows no bar for it.
+      action = selectMinimaxAction(s, Math.max(2, Math.min(8, d.minimaxDepth || 3)));
+    } else {
+      action = await selectAction(s, numSims, evalFn, gen, (done, total) => {
+        if (gen === _activeTaskGen) postMessage({ type: 'progress', done, total, gen });
+      });
+    }
     if (gen !== _activeTaskGen) return;  // cancelled
     if (action === null) return;  // cancelled
     postMessage({ type: 'move', action, gen });
@@ -414,7 +425,9 @@ onmessage = async function (e) {
         .slice(0, 30);
       nn = { value, moves, current_player: s.getCurrentPlayer() };
     }
-    const result = await getPolicy(s, numSims, evalFn, gen);
+    const result = await getPolicy(s, numSims, evalFn, gen, (done, total) => {
+      if (gen === _activeTaskGen) postMessage({ type: 'progress', done, total, gen });
+    });
     if (!result) return;  // cancelled
     const moves = result.policy
       .map(({ action, prob }) => ({ label: actionLabel(s, action), prob }))
