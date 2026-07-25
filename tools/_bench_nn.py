@@ -1,5 +1,7 @@
 import time
 import torch
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from dual_network import DualNetwork
 
 BOARDSIZE  = 7

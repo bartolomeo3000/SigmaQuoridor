@@ -13,6 +13,8 @@ import random
 
 import numpy as np
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 import quoridor_cpp
 from game import State, action_to_index, index_to_action
 

@@ -14,6 +14,8 @@ import time
 
 import torch
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 import quoridor_cpp as qc
 from dual_network import NNEvaluator, load_model
 from game import State, action_to_index, index_to_action
@@ -22,7 +24,7 @@ from mcts import MCTSAgent
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--model", default="models_7x7/best.pt")
+    p.add_argument("--model", default="runs/models_7x7/best.pt")
     p.add_argument("--rollout-sims", type=int, default=10_000)
     p.add_argument("--nn-sims", type=int, default=400)
     p.add_argument("--rollout-c-puct", type=float, default=1.0)

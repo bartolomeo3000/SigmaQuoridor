@@ -4,14 +4,16 @@ a real regression rather than a subtle strength difference."""
 import math
 import torch
 import numpy as np
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from game import State, WallAction, PawnAction, index_to_action, action_to_index
 from dual_network import load_model, NNEvaluator
 
 CPU = torch.device("cpu")
 CKPTS = {
-    "legacy-359": "models_9x9/checkpoints/cycle_0359.pt",
-    "heads-56":   "models_9x9_heads/checkpoints/cycle_0056.pt",
-    "heads-164":  "models_9x9_heads/checkpoints/cycle_0164.pt",
+    "legacy-359": "runs/models_9x9/checkpoints/cycle_0359.pt",
+    "heads-56":   "runs/models_9x9_heads/checkpoints/cycle_0056.pt",
+    "heads-164":  "runs/models_9x9_heads/checkpoints/cycle_0164.pt",
 }
 
 def make_positions():

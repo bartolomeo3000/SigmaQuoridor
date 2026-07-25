@@ -10,6 +10,8 @@ we just record wall-clock time per move for each.
 import argparse
 import time
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 import quoridor_cpp as qc
 from game import State
 from mcts import MCTSAgent

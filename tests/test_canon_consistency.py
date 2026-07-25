@@ -11,6 +11,8 @@ Run:  .venv/Scripts/python test_cpp_parity.py   (rules parity)
 """
 import numpy as np
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from game import (State, PawnAction, WallAction, ALL_PAWN_DIRECTIONS,
                   action_to_index, index_to_action, action_space_size,
                   vert_policy_permutation, flip_policy_vert)
@@ -60,7 +62,7 @@ def test_serve_mirror_consistency():
     """The bug: P2 pos and its role-swap mirror have identical nn_input but got
     different physical advice. After the fix the serve path must agree."""
     from dual_network import load_model, NNEvaluator
-    ev = NNEvaluator(load_model("models_9x9/best.pt"))
+    ev = NNEvaluator(load_model("runs/models_9x9/best.pt"))
 
     def best_move_dir(state):
         legal = state.get_legal_actions()

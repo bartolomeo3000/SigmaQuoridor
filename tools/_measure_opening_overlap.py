@@ -18,6 +18,8 @@ from collections import Counter
 import numpy as np
 import torch
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 import quoridor_cpp
 from dual_network import DualNetwork, load_model
 

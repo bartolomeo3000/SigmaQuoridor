@@ -16,7 +16,7 @@ old-shaped weights can't transfer). Writes both files a fresh
 Does not touch the source lineage (--src and its directory) at all.
 
 Usage:
-    python init_head_redesign.py --src models_9x9/best.pt --dst-dir models_9x9_heads
+    python tools/init_head_redesign.py --src models_9x9/best.pt --dst-dir models_9x9_heads
 
 Then, e.g.:
     python cpp_train_loop.py --cycles 20 --model-dir models_9x9_heads --data-dir data_9x9_heads ...
@@ -27,15 +27,17 @@ import os
 from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from dual_network import DEVICE, save_model, warm_start_from_legacy
 from train import LEARNING_RATE, WEIGHT_DECAY, LR_MILESTONES, LR_DECAY, save_training_checkpoint
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--src", default="models_9x9/best.pt",
+    p.add_argument("--src", default="runs/models_9x9/best.pt",
                    help="existing trained checkpoint to warm-start the trunk from")
-    p.add_argument("--dst-dir", default="models_9x9_heads",
+    p.add_argument("--dst-dir", default="runs/models_9x9_heads",
                    help="new model directory for this experiment (must not already "
                         "contain best.pt/checkpoints — use a fresh lineage)")
     p.add_argument("--value-head", choices=["pooled", "legacy"], default="pooled")
@@ -70,8 +72,12 @@ def main() -> None:
     save_training_checkpoint(dst_ckpt_path, model, optimizer, scheduler, cycle=0)
     print(f"Saved fresh training-state checkpoint (cycle 0) -> {dst_ckpt_path}")
 
-    base = os.path.basename(os.path.normpath(args.dst_dir))
-    data_dir_hint = ("data_" + base[len("models_"):]) if base.startswith("models_") else "<data-dir>"
+    # Keep the parent dir when swapping the prefix -- lineages sit side by side
+    # under runs/, so the hint must be runs/data_<x>, not a bare data_<x>.
+    norm = os.path.normpath(args.dst_dir)
+    base = os.path.basename(norm)
+    data_dir_hint = (os.path.join(os.path.dirname(norm), "data_" + base[len("models_"):])
+                     if base.startswith("models_") else "<data-dir>")
     print(
         f"\nNext step, e.g.:\n"
         f"  python cpp_train_loop.py --cycles 20 --model-dir {args.dst_dir} "

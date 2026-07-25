@@ -1,10 +1,12 @@
 """Load a pre-trained model, reset policy and value heads, save as best.pt.
 
 Usage:
-    python reset_heads.py --src models_9x9/supervised_big.pt --dst models_9x9/best.pt
+    python tools/reset_heads.py --src models_9x9/supervised_big.pt --dst models_9x9/best.pt
 """
 import argparse
 import torch
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from dual_network import load_model, save_model
 
 HEAD_LAYERS = [
@@ -24,8 +26,8 @@ def reset_heads(model: torch.nn.Module) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--src", default="models_9x9/supervised_big.pt")
-    p.add_argument("--dst", default="models_9x9/best.pt")
+    p.add_argument("--src", default="runs/models_9x9/supervised_big.pt")
+    p.add_argument("--dst", default="runs/models_9x9/best.pt")
     args = p.parse_args()
 
     model = load_model(args.src)

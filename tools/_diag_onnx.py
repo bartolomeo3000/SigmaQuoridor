@@ -8,11 +8,13 @@ import numpy as np
 import torch
 from onnx.reference import ReferenceEvaluator
 import onnx
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from game import State, PawnAction, WallAction
 from dual_network import load_model
 
 CPU = torch.device("cpu")
-PT   = "models_9x9_heads/best.pt"
+PT   = "runs/models_9x9_heads/best.pt"
 ONNX = "docs/models_9x9/best.onnx"
 
 def positions():

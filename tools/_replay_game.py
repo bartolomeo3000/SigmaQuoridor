@@ -9,6 +9,8 @@ Hard-coded: cycle_0071 (P1) vs supervised_extended (P2), temp=0.
 """
 
 import torch
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from dual_network import NNEvaluator, load_model
 from game import State, PawnAction, WallAction
 from mcts import MCTSAgent
@@ -134,8 +136,8 @@ def replay(path_p1, path_p2, out_file=None):
 
 if __name__ == "__main__":
     replay(
-        path_p1="models_7x7/supervised_extended.pt",
-        path_p2="models_7x7/supervised_extended.pt",
+        path_p1="runs/models_7x7/supervised_extended.pt",
+        path_p2="runs/models_7x7/supervised_extended.pt",
         out_file="replay_sup_vs_sup.txt",
     )
     print("Saved to replay_sup_vs_sup.txt")

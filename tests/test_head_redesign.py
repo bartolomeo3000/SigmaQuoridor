@@ -12,12 +12,14 @@ Run:  .venv/Scripts/python test_head_redesign.py
 import numpy as np
 import torch
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from game import State, action_space_size
 from dual_network import (DualNetwork, NNEvaluator, DEVICE, save_model, load_model,
                           warm_start_from_legacy, _infer_arch)
 
 N = 9
-OLD_CKPT = "models_9x9/best.pt"
+OLD_CKPT = "runs/models_9x9/best.pt"
 
 
 def test_old_checkpoint_still_loads():

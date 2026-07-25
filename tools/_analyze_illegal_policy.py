@@ -19,6 +19,8 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from dual_network import load_model
 from game import (
     State,
@@ -193,7 +195,7 @@ def show_initial_state_top(model, boardsize: int, walls: int, device: torch.devi
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze raw NN policy mass on illegal actions")
-    parser.add_argument("--model", default="models_9x9_heads/best.pt")
+    parser.add_argument("--model", default="runs/models_9x9_heads/best.pt")
     parser.add_argument("--boardsize", type=int, default=9)
     parser.add_argument("--walls", type=int, default=10)
     parser.add_argument("--states", type=int, default=500)

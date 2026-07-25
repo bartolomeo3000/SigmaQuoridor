@@ -1,5 +1,7 @@
 import argparse
 import torch
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from dual_network import NNEvaluator, load_model
 from game import State
 from mcts import MCTSAgent

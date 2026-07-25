@@ -1,5 +1,5 @@
 import torch
-ckpt = torch.load("models_7x7/best.pt", map_location="cpu", weights_only=False)
+ckpt = torch.load("runs/models_7x7/best.pt", map_location="cpu", weights_only=False)
 sd = ckpt.state_dict() if hasattr(ckpt, "state_dict") else ckpt
 keys = list(sd.keys())
 print("Keys sample:", keys[:8])

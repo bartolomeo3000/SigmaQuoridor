@@ -12,6 +12,8 @@ Usage:
 
 import argparse
 
+import _bootstrap  # noqa: F401  (puts the repo root on sys.path)
+
 from game import State, index_to_action
 from _replay_game import draw_board, fmt_action
 

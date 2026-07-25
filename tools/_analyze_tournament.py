@@ -1,14 +1,14 @@
 import csv, collections, numpy as np
 
-with open('models_7x7/checkpoints/tournament_results_matchups.csv', newline='') as f:
+with open('runs/models_7x7/checkpoints/tournament_results_matchups.csv', newline='') as f:
     rows = list(csv.DictReader(f))
 
 elo_order = [
-    'models_7x7\\supervised_extended.pt',
+    'runs/models_7x7\\supervised_extended.pt',
     'cycle_0111','cycle_0091','cycle_0101','cycle_0071',
     'cycle_0081','cycle_0121','cycle_0141','cycle_0131',
     'cycle_0061','cycle_0051','cycle_0041',
-    'models_7x7_v2\\best.pt',
+    'runs/models_7x7_v2\\best.pt',
     'cycle_0031','minimax-3','minimax-2',
     'cycle_0021','cycle_0011','cycle_0001',
 ]
@@ -25,7 +25,7 @@ def score_pct(a, b):
 
 lbl = {}
 for n in elo_order:
-    s = n.replace('models_7x7\\', '').replace('models_7x7_v2\\', 'v2/').replace('.pt', '')
+    s = n.replace('runs/models_7x7\\', '').replace('runs/models_7x7_v2\\', 'v2/').replace('.pt', '')
     lbl[n] = s
 
 # ── 1. Head-to-head matrix (top 9) ───────────────────────────────────────────
