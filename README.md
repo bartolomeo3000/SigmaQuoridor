@@ -368,24 +368,11 @@ Odd sizes only, currently: starting columns are `N/2`.
 `cpp/selfplay.hpp` → `export_onnx.py` → the JS engine in `docs/`. Rewrite the parity test's
 expectations alongside.
 
-### The canonicalization trap
-
-Worth understanding before you port, because it cost this project a training run.
-
-The network has **no side-to-move input** — the board is always presented from the mover's
-perspective, so for player 2 it is flipped vertically. That means a position and its role-swapped
-mirror produce *byte-identical* input tensors. The policy target must therefore be flipped
-through the matching permutation too, or the two cases demand opposite outputs from identical
-input, and the policy just blurs.
-
-The flip must be applied consistently at **all four** sites: training targets (`train.py`),
-Python serving (`NNEvaluator`), C++ self-play (`cpp/selfplay.hpp`), and the browser
-(`docs/mcts_worker.js`). Get it wrong in one place and nothing crashes — the value head is fine,
-legality masking still passes, and the agent simply plays nonsense as player 2. It shows up as
-"the model is weirdly bad" long before it shows up as a bug.
-
-`tests/test_canon_consistency.py` guards this by asserting a position and its role-swapped twin
-produce mirror-image advice.
+One thing to get right from the start: the board is always shown to the network from the
+side-to-move's perspective, so for player 2 it is flipped. The policy has to be flipped the same
+way, everywhere — training targets, serving, self-play, and the JS frontend. If those disagree
+the model just plays badly as player 2 without anything erroring.
+`tests/test_canon_consistency.py` checks it.
 
 ---
 
@@ -430,7 +417,7 @@ SigmaQuoridor/
 ├─ Tests & tooling ─────────────────────────────────────────────────────────
 │  tests/               Verification CLIs, run directly (no pytest)
 │    ├─ test_cpp_parity.py         ★ C++ engine vs Python reference
-│    ├─ test_canon_consistency.py    policy-frame canonicalization
+│    ├─ test_canon_consistency.py    player-2 policy flip consistency
 │    └─ test_head_redesign.py        network head variants
 │  tools/               One-off analysis/debug/setup scripts (not maintained pipeline)
 │
