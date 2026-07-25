@@ -81,9 +81,9 @@ FPU_REDUCTION     = 0.1    # First Play Urgency: unvisited child Q estimate = pa
 # <= TEMP_PRUNE_VISITS visits are never sampled (argmax always eligible).
 # Must be kept in sync with cpp/selfplay.hpp / cpp/bindings.cpp /
 # selfplay_cpp.py defaults.
-TEMP_EARLY        = 0.9
-TEMP_FINAL        = 0.15
-TEMP_HALFLIFE     = 7.0
+TEMP_EARLY        = 1.0
+TEMP_FINAL        = 0.2
+TEMP_HALFLIFE     = 10.0
 TEMP_PRUNE_VISITS = 4
 FAST_PLAY_PROB      = 0.0  # fraction of moves that use fast MCTS; remainder use full search
 MCTS_SIMS_FAST      = 128   # simulations for fast plies (2 NN batches); not saved unless surprising

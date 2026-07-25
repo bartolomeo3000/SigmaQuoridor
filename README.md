@@ -48,62 +48,23 @@ weights entered six times, at six simulation counts, everyone playing everyone, 
 | 10 | 1277 | 22.5% |
 | **1** — the raw network, no search | 1225 | 17.1% |
 
-## Speed
-
-The current network is the product of a single from-scratch run on my personal desktop — not a
-cluster, not a rented A100.
-
-| | |
-|---|---|
-| Machine | Ryzen 7 7800X3D (8 cores) · RTX 5070 Ti 16 GB · 32 GB RAM · Windows 11 |
-| Board | 9×9, 10 walls per player |
-| Training | 321 cycles · 2048 self-play games each · 800 MCTS sims/move |
-| Compute | **35.7 h total** — 27.2 h self-play + 8.4 h network training |
-| Gradient steps | 319,000 |
-| Network | 128 filters × 10 residual blocks, KataGo-style global pooling every 3rd block |
-
-**Speed on consumer hardware is a design goal here, not an afterthought** — and it's the main
-thing this repo does differently from most AlphaZero reimplementations, which tend to be written
-for clarity or for clusters and are content to generate a few hundred games an hour on one GPU.
-
-Measured on the machine above, at full 9×9 / 800-simulations-per-move settings:
-
-| | |
-|---|---|
-| Self-play | **~29,700 games/hour** (2048 games in ~249 s) |
-| Training | ~105 s per cycle (1000 gradient steps at batch 1024) |
-| **Full cycle** | **~6 minutes**, self-play *and* training |
-
-That is what makes a 321-cycle run finish over a weekend instead of a month. Where it comes from:
-
-- **The whole search is in C++** ([`cpp/`](cpp/)) — a second, from-scratch rules engine with
-  bitboards and Zobrist hashing, running leaf-parallel MCTS on worker threads that hold no GIL.
-- **Thousands of games run concurrently** so the GPU always receives large inference batches
-  instead of one position at a time — the single biggest factor.
-- **A transposition table shared across all those games**, so the openings every game passes
-  through are evaluated once, not thousands of times.
-- **Exact alpha-beta endgame solving**, bf16 inference, and a pre-allocated flat replay buffer.
-
-The trade-off is honest: the rules now exist twice, in Python and C++, and have to be kept
-byte-identical. That's what [`tests/test_cpp_parity.py`](tests/test_cpp_parity.py) is for.
-
-Worth knowing if you're picking hardware: **on this machine the CPU is the bottleneck, not the
-GPU.** Tree search, move generation, the transposition table and the endgame solver all run on
-the CPU, and they kept all 8 cores pinned at 100% while the GPU frequently sat waiting for the
-next batch. More cores — or faster ones — would likely raise throughput more than a better GPU
-would. Core count especially: the games run independently, so search scales across as many
-threads as you can give it (`--threads`), and keeping more games in flight is also what keeps the
-GPU's inference batches large.
-
----
-
 ## How it works (AlphaZero in five minutes)
 
-If you already know AlphaZero, skip to [Using the web app](#using-the-web-app).
+If you already know AlphaZero, skip to [Speed](#speed).
 
-Classical engines (Stockfish-style) search deeply and score positions with a hand-written
-evaluation function. AlphaZero replaces the hand-written parts with a neural network that is
-trained *only* on games the engine plays against itself.
+Classical engines (Stockfish-style) use a neural network too these days — but only as an
+*evaluator*: a small, extremely fast net that scores a leaf position, called millions of times per
+second inside an alpha-beta search that grinds through tens of millions of nodes and prunes
+branches by rules the network has no say in.
+
+AlphaZero shifts the weight the other way. The network is far larger and slower, so the search can
+only afford a few hundred evaluations per move — and it earns that by doing a second job: as well
+as scoring a position, it *proposes which moves are worth looking at*. That output steers the
+search itself. Monte-Carlo Tree Search grows the tree lopsidedly, pouring its budget into the lines
+the network already finds promising and barely glancing at the rest, rather than sweeping a
+tapering-but-broad frontier. Less brute force, more guided attention. And the network learns all of
+this *only* from games the engine plays against itself — no human games, no hand-written evaluation
+to start from.
 
 **The network.** One network, two outputs ("heads"), fed a stack of planes describing the
 board position:
@@ -164,6 +125,84 @@ That is why the approach ports to other games — see
   alpha-beta instead of guessed by the network, giving perfect training labels for endgames.
 - **A shared transposition table** caches network evaluations across the thousands of games
   running concurrently, which is a large part of the throughput.
+
+---
+
+## Speed
+
+The current network is the product of a single from-scratch run on my personal desktop — not a
+cluster, not a rented A100.
+
+| | |
+|---|---|
+| Machine | Ryzen 7 7800X3D (8 cores) · RTX 5070 Ti 16 GB · 32 GB RAM · Windows 11 |
+| Board | 9×9, 10 walls per player |
+| Training | 321 cycles · 2048 self-play games each · 800 MCTS sims/move |
+| Compute | **35.7 h total** — 27.2 h self-play + 8.4 h network training |
+| Gradient steps | 319,000 |
+| Network | 128 filters × 10 residual blocks, KataGo-style global pooling every 3rd block |
+
+**Speed on consumer hardware is a design goal here, not an afterthought** — and it's the main
+thing this repo does differently from most AlphaZero reimplementations, which tend to be written
+for clarity or for clusters and are content to generate a few hundred games an hour on one GPU.
+
+Measured on the machine above, at full 9×9 / 800-simulations-per-move settings:
+
+| | |
+|---|---|
+| Self-play | **~20,000–30,000 games/hour** (2048 games in ~4–6 min) |
+| Training | ~105 s per cycle (1000 gradient steps at batch 1024) |
+| **Full cycle** | **~6–7 minutes**, self-play *and* training |
+
+Cycle times vary by a fair margin — with how long the games happen to run, and with how much of
+the search the transposition table manages to absorb. The 321 recorded cycles average 6.7 minutes
+end to end. That is what makes such a run finish over a weekend instead of a month. Where the
+speed comes from:
+
+- **The whole search is in C++** ([`cpp/`](cpp/)) — a second, from-scratch rules engine with
+  bitboards and Zobrist hashing, running leaf-parallel MCTS on worker threads that hold no GIL.
+- **Thousands of games run concurrently** so inference runs on batches of hundreds of positions
+  instead of one position at a time — the single biggest factor.
+- **A transposition table shared across all those games**, so the openings every game passes
+  through are evaluated once, not thousands of times.
+- **Exact alpha-beta endgame solving**, bf16 inference, and a pre-allocated flat replay buffer.
+
+Worth knowing if you're picking hardware: **the CPU is the tighter constraint on this machine —
+though the GPU is under-fed rather than idle.** Tree search, move generation, the transposition
+table and the endgame solver all run on the CPU. Sampled every two seconds across a full 9×9 /
+800-simulation cycle (ignoring the straggler tail at the end):
+
+| | median | peak |
+|---|---:|---:|
+| System CPU | 92% | 100% |
+| GPU utilisation | 42% | 85% |
+| GPU board power | 98 W | 178 W |
+
+Self-play asks the card for ~25,000 network evaluations per second. Fed synthetic full batches, the
+same network on the same card retires **~90,000 per second**, so roughly 3× of GPU headroom is
+going unused. That is by design rather than by accident: **around 90% of the ~90 million
+simulations in a cycle never reach the network at all** — the shared transposition table, in-tree
+exact solving and terminal-node detection answer them on the CPU instead. Buying CPU work to avoid
+GPU work is a large net win, but it is also what makes self-play CPU-heavy.
+
+If you did want more self-play throughput here, **cores are the lever rather than the GPU** — the
+search, the table and the solver are all CPU work, and they are what leaves the card mostly idle.
+The payoff is bounded, though: the GPU saturates at ~90,000 evaluations/s however you feed it, so
+there is roughly 3× of room and then a wall. **Raising `--max-batch` above ~1024 buys nothing on
+this card** either: throughput plateaus from batch ~768 upward (768: 94k evals/s, 1024: 93k,
+2048: 83k, 8192: 87k — the variation up there is within run-to-run noise) while per-batch latency
+grows from 11 ms to 94 ms, which only makes every in-flight simulation's statistics staler. Where
+that knee sits is specific to this card and this network size; the shape is not — past the point
+where batches saturate the GPU, a bigger cap adds round-trip latency without adding throughput. The constraint also
+moves around within a single cycle: the opening burst, where thousands of games all want their
+first positions evaluated at once, is genuinely GPU-bound (85% utilisation, 178 W), and the CPU
+only becomes the limit once the transposition table starts absorbing those shared openings.
+
+Worth saying plainly, though: **more throughput is not what this needs.** Self-play games overlap
+heavily — 2048 games a cycle yield only about 59,000 distinct positions, 42% of the rows written,
+and that share shrinks as the policy sharpens and sampling becomes more deterministic. Faster
+hardware of either kind would mostly buy more duplicate positions. Widening the range of openings
+the games actually explore would buy more information than either.
 
 ---
 

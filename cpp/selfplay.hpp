@@ -65,9 +65,9 @@ struct Config {
     // are never sampled (the argmax move is always eligible) so tail
     // temperature can't play outright noise moves. Only active when
     // training=true; otherwise selection is pure argmax.
-    double temp_early      = 0.8;
-    double temp_final      = 0.15;
-    double temp_halflife   = 20.0;
+    double temp_early      = 1.0;
+    double temp_final      = 0.2;
+    double temp_halflife   = 10.0;
     int temp_prune_visits  = 4;
 
     int max_moves          = 200;

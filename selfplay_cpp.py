@@ -91,9 +91,9 @@ def main() -> None:
     p.add_argument("--games", type=int, default=1024)
     p.add_argument("--sims", type=int, default=800)
     p.add_argument("--threads", type=int, default=7)
-    p.add_argument("--parallel", type=int, default=1024)
+    p.add_argument("--parallel", type=int, default=2048)
     p.add_argument("--leaf-batch", type=int, default=1)
-    p.add_argument("--max-batch", type=int, default=512)
+    p.add_argument("--max-batch", type=int, default=1024)
     p.add_argument("--flush-us", type=int, default=500)
     p.add_argument("--model", type=str, default=None,
                    help="checkpoint path; fresh random net if omitted")
@@ -119,12 +119,12 @@ def main() -> None:
     p.add_argument("--dirichlet-alpha", type=float, default=0.3)
     p.add_argument("--dirichlet-epsilon", type=float, default=0.25)
     p.add_argument("--fpu", type=float, default=0.1)
-    p.add_argument("--temp-early", type=float, default=0.8,
+    p.add_argument("--temp-early", type=float, default=1.0,
                    help="selection temperature at ply 0 (KataGo-style schedule)")
-    p.add_argument("--temp-final", type=float, default=0.15,
+    p.add_argument("--temp-final", type=float, default=0.2,
                    help="asymptotic selection temperature late in the game "
                         "(small nonzero value keeps trajectories diverging)")
-    p.add_argument("--temp-halflife", type=float, default=6.0,
+    p.add_argument("--temp-halflife", type=float, default=10.0,
                    help="plies for the early->final temperature gap to halve")
     p.add_argument("--temp-prune-visits", type=int, default=4,
                    help="moves with <= this many visits are never sampled")
@@ -134,11 +134,11 @@ def main() -> None:
                    help="cache NN outputs for states at depth <= this "
                         "(shared across all parallel games); 0 disables the "
                         "TT entirely; negative means unlimited depth (no ceiling)")
-    p.add_argument("--tt-max-entries", type=int, default=2_000_000,
+    p.add_argument("--tt-max-entries", type=int, default=5_000_000,
                    help="hard cap on total cached TT entries across all shards "
                         "(bounds worst-case memory); 0 disables the TT entirely; "
                         "negative means unlimited (no cap)")
-    p.add_argument("--solver-max-total-walls", type=int, default=2,
+    p.add_argument("--solver-max-total-walls", type=int, default=1,
                    help="when walls_p1+walls_p2 drops to <= this, skip NN+MCTS "
                         "and use an exact alpha-beta solve for the rest of the "
                         "game (one-hot policy targets along the fastest-win/"
@@ -161,12 +161,13 @@ def main() -> None:
                    help="safety cap on wall-clock seconds for in-tree MCTS leaf "
                         "solves; a timed-out attempt falls back to a normal NN "
                         "eval leaf for that node")
-    p.add_argument("--abandon-stragglers-below", type=int, default=0,
+    p.add_argument("--abandon-stragglers-below", type=int, default=48,
                    help="once fewer than this many games remain unfinished, stop "
                         "immediately and discard them instead of waiting for the "
                         "long GPU-starved tail (last few games run with batch "
                         "size ~1-4, dragging out wall-clock disproportionately). "
-                        "0 disables (default: wait for every game to finish)")
+                        "0 waits for every game to finish, which typically costs "
+                        "~90s of near-idle tail on a 2048-game cycle")
     p.add_argument("--no-augment", action="store_true",
                    help="skip left-right flip augmentation")
     p.add_argument("--compile", action="store_true",
