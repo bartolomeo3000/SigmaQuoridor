@@ -132,6 +132,14 @@ That is why the approach ports to other games — see
 
 **Where this implementation differs from some other approaches:**
 
+- **Discrete cycles, not a continuous stream.** AlphaZero runs self-play and training
+  *simultaneously and asynchronously* — workers generate games nonstop against whatever weights
+  are current, while a trainer updates those weights in parallel. Here the two strictly alternate:
+  freeze the network, play 2048 games with it, stop, train on the replay buffer, repeat. It's
+  simpler to reason about and to restart (the two halves are even separate processes, so a crash
+  costs at most one cycle), and it makes "cycle N" a meaningful, comparable checkpoint. The cost
+  is that the GPU switches roles instead of doing both at once, and games late in a cycle are
+  played by a network that is already slightly out of date.
 - **No promotion gate.** Every cycle's weights are kept; there's no "only accept the new network
   if it beats the old one by 55%" step. Progress can be verified after the fact with tournaments.
 - **(Optional) exact endgame solver.** Once few enough walls remain, positions are solved exactly by
