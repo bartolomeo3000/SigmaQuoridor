@@ -35,8 +35,7 @@ Elo tournaments between checkpoints (`runs/tournaments/`).
 ## Speed
 
 The current network is the product of a single from-scratch run on my personal desktop — not a
-cluster, not a rented A100, and not a dedicated machine either: the CPU was under normal load
-from everything else I was doing at the time.
+cluster, not a rented A100.
 
 | | |
 |---|---|
@@ -71,6 +70,11 @@ That is what makes a 321-cycle run finish over a weekend instead of a month. Whe
 
 The trade-off is honest: the rules now exist twice, in Python and C++, and have to be kept
 byte-identical. That's what [`tests/test_cpp_parity.py`](tests/test_cpp_parity.py) is for.
+
+Worth knowing if you're picking hardware: **on this machine the CPU is the bottleneck, not the
+GPU.** Tree search, move generation, the transposition table and the endgame solver all run on
+the CPU, and they kept all 8 cores pinned at 100% while the GPU frequently sat waiting for the
+next batch. A faster CPU would likely raise throughput more than a faster GPU would.
 
 ---
 
