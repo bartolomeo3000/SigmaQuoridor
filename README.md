@@ -7,6 +7,8 @@ Just the rules, self-play, and a neural network that learns from its own games.
 ### ▶ [**Play it in your browser →**](https://bartolomeo3000.github.io/SigmaQuoridor/)
 
 No install, nothing to download — the network runs client-side in your browser, using your CPU via ONNX.
+Don't know the game? [**RULES.md**](RULES.md) walks through it in diagrams — including every jump
+and wall case.
 
 ![Playing against SigmaQuoridor on the 9x9 board](docs/screenshots/board.png)
 
