@@ -1092,6 +1092,13 @@ function initAgentList() {
   buildModelSelect();
   buildAnalysisModelSelect();
   updateModelPickerVisibility();
+  // The Players card shows the agent's name, and only updateSidebar() writes it.
+  // Rebuilding the agent list can change which agent is selected (async ONNX
+  // loading flips alphazero's availability, and _buildAgentSelect falls back to
+  // the first available agent while it loads), so refresh the card here too or
+  // it keeps showing the superseded name until the next move. Guarded because
+  // the first call happens before initGame() creates `state`.
+  if (state) updateSidebar();
 }
 
 function _updateAgentDesc() {
