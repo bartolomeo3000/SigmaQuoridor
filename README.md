@@ -48,12 +48,6 @@ weights entered six times, at six simulation counts, everyone playing everyone, 
 | 10 | 1277 | 22.5% |
 | **1** — the raw network, no search | 1225 | 17.1% |
 
-Roughly **550 Elo** separates the network on its own from the same network thinking for 400
-simulations — with nothing changed but how long it is allowed to look. Read the ends of that
-ladder rather than individual rungs: at 200 games a pair, neighbouring rows sit within noise of
-each other, and the searchless agent is deterministic, so its rows vary less than the game count
-suggests.
-
 ## Speed
 
 The current network is the product of a single from-scratch run on my personal desktop — not a
