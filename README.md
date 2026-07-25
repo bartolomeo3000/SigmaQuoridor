@@ -352,12 +352,12 @@ Knobs that matter most:
 | Flag | Default | Effect |
 |---|---|---|
 | `--games` / `--sims` | 2048 / 800 | The main cost/quality trade: how much data per cycle, and how good the MCTS targets are |
-| `--parallel` / `--max-batch` | 2048 / 512 | Throughput. More concurrent games = bigger GPU batches |
+| `--parallel` / `--max-batch` | 2048 / 1024 | Throughput. More concurrent games = bigger GPU batches |
 | `--threads` | 7 | C++ search threads; roughly your physical core count |
 | `--bf16` | off | Near-free speedup on modern NVIDIA GPUs — turn it on |
-| `--lr` | 3e-4 | Learning rate |
+| `--lr` | 3e-4 at start, decay on later cycles | Learning rate |
 | `--buffer-cycles` | 30 | How much history to train on; higher = more stable, more stale |
-| `--solver-max-total-walls` | 2 | Exact endgame solving once few walls remain (see gotchas) |
+| `--solver-max-total-walls` | 1 | Exact endgame solving once few walls remain (see gotchas) |
 
 ### 3. Watch it learn
 
