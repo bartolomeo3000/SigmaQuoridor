@@ -8,10 +8,7 @@ Just the rules, self-play, and a neural network that learns from its own games.
 
 No install, nothing to download — the network runs client-side in your browser, using your CPU via ONNX.
 
-<!-- SCREENSHOT: a game in progress on the 9x9 board, sidebar visible.
-     Save as docs/screenshots/board.png and uncomment:
-![Playing against SigmaQuoridor](docs/screenshots/board.png)
--->
+![Playing against SigmaQuoridor on the 9x9 board](docs/screenshots/board.png)
 
 ---
 
@@ -188,10 +185,11 @@ everything runs in your browser (ONNX Runtime Web); no data leaves your machine.
 Try setting Simulations to **1** — that's the pure policy head, no search at all, and it still
 plays a respectable game.
 
-<!-- SCREENSHOT: the Analysis panel open, showing NN-vs-MCTS move bars.
-     Save as docs/screenshots/analysis.png and uncomment:
-![Analysis panel](docs/screenshots/analysis.png)
--->
+![The analysis panel: network priors in green against MCTS visit counts in red](docs/screenshots/analysis.png)
+
+In the shot above, the top move `H(5,3)` is one the network rated **19.3%** but search settled on
+at **66.0%**, while `V(5,0)` went the other way — **48.0%** down to **32.0%**. That gap, in both
+directions, is what the training loop learns from.
 
 ---
 
