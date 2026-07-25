@@ -269,10 +269,6 @@ python train.py --model-dir runs/models_myrun --cycles 0
 `runs/models_myrun/best.pt` and creates `checkpoints/` and `runs/data_myrun/`, without running
 any (slow, pure-Python) self-play.
 
-> Ignore the hint printed by `cpp_train_loop.py` suggesting `selfplay_cpp.py` without `--model`.
-> That does create a random network, but it never *saves* one — and its defaults are 7×7/64×6,
-> which won't match your lineage. Use the command above.
-
 Architecture is fixed at creation time via `--filters` / `--res` / `--gpool-every` /
 `--value-head` / `--pawn-head` (defaults: 128 filters, 10 blocks, global pooling every 3rd block,
 pooled value head, local pawn head). Board size comes from `BOARDSIZE` in `train.py`, not a flag.

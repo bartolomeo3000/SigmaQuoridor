@@ -110,11 +110,17 @@ def main() -> None:
         data_dir = DATA_DIR
 
     if not os.path.exists(model_path):
+        # --cycles 0 initialises and exits: train.py creates the model dir,
+        # checkpoints/ and the paired data dir, and saves random-init weights
+        # before entering the (empty) cycle loop. Note `selfplay_cpp.py` with no
+        # --model does build a random net, but never saves one, so it can't
+        # bootstrap a lineage; and plain `train.py` would run a full cycle of
+        # slow pure-Python self-play just to get here.
         sys.exit(
-            f"{model_path} does not exist yet. Run `python train.py` once "
-            f"(without --train-only) to create an initial checkpoint, or "
-            f"`python selfplay_cpp.py` without --model for a fresh random net, "
-            f"before using this loop."
+            f"{model_path} does not exist yet. Create the lineage first with:\n"
+            f"    python train.py --model-dir {model_dir} --cycles 0\n"
+            f"That writes random-init weights and sets up {data_dir}, "
+            f"after which this loop can run."
         )
 
     for cycle in range(args.cycles):
