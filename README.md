@@ -353,9 +353,17 @@ action encoding, and the input planes.
 
 ### The two-engine contract
 
-Rules exist **twice**: `game.py` (readable Python reference) and `cpp/engine.hpp` (a from-scratch
-C++ reimplementation with bitsets and Zobrist hashing — not a translation). The C++ one is what
-makes training fast; the Python one is what keeps it honest.
+Rules exist **twice**: `game.py` and `cpp/engine.hpp` — a from-scratch C++ reimplementation with
+bitsets and Zobrist hashing, not a translation.
+
+Training and tournaments run entirely on the C++ side — nothing in the production loop touches
+the Python engine. It still backs `app.py`, the eval scripts, and the parity test, but it is not
+what generates training data.
+
+That makes it the one to read first if you're trying to understand the rules or port them. Not
+because it's smaller — `game.py` is twice the length of `cpp/engine.hpp` — but because it says
+what it means: plain data structures and readable path-finding, where the C++ is bitsets,
+incremental Zobrist hashing and cached path edges written for speed.
 
 `tests/test_cpp_parity.py` is the contract between them. It plays identical random games through
 both, and every ply asserts they agree on: the **legal action set**, all **8 NN input planes**,
@@ -426,10 +434,13 @@ the model just plays badly as player 2 without anything erroring.
 SigmaQuoridor/
 │
 ├─ Core engine ─────────────────────────────────────────────────────────────
-│  game.py              Canonical pure-Python rules: State, legal moves, BFS, action encoding
-│  mcts.py              PUCT MCTS against a pluggable Evaluator (network or random rollout)
+│  game.py              Readable Python rules: State, legal moves, BFS, action encoding.
+│                         The reference the C++ is checked against — start here.
+│  mcts.py              PUCT MCTS against a pluggable Evaluator (network or random rollout).
+│                         Python-only; the training loop uses the C++ search instead.
 │  dual_network.py      Policy+value ResNet, NNEvaluator, self-describing save/load
-│  cpp/                 Second, from-scratch C++ engine (pybind11) — kept in parity with game.py
+│  cpp/                 ★ What actually runs during training — a second, from-scratch engine
+│                         (pybind11), kept in parity with game.py
 │    ├─ engine.hpp        rules, BFS, Zobrist hashing, action encoding
 │    ├─ selfplay.hpp      SelfPlayManager: leaf-parallel MCTS, GIL-free worker threads
 │    ├─ tournament.hpp    TournamentManager: cross-play games
