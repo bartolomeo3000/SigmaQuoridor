@@ -6,7 +6,7 @@ Just the rules, self-play, and a neural network that learns from its own games.
 
 ### ▶ [**Play it in your browser →**](https://bartolomeo3000.github.io/SigmaQuoridor/)
 
-No install, nothing to download — the network runs client-side in your browser via ONNX.
+No install, nothing to download — the network runs client-side in your browser, using your CPU via ONNX.
 
 <!-- SCREENSHOT: a game in progress on the 9x9 board, sidebar visible.
      Save as docs/screenshots/board.png and uncomment:
@@ -17,10 +17,16 @@ No install, nothing to download — the network runs client-side in your browser
 
 ## What it achieves
 
-The 9×9 network reached a level where **it beats a strong public Quoridor AI
-([gorisanson's quoridor-ai](https://gorisanson.github.io/quoridor-ai/)) as both first and second
-player using no search at all** — one forward pass, playing the arg-max of the policy head, no
-MCTS. With search on top it is considerably stronger still.
+The reference opponent throughout this project was
+[gorisanson's quoridor-ai](https://gorisanson.github.io/quoridor-ai/), which also uses MCTS, but
+guided by hand-written heuristics rather than a learned network. It's a reasonable benchmark
+rather than a brick wall — it plays sensibly and a decent human can beat it — but as of
+**25.07.2026** it was the strongest publicly available Quoridor AI I could find, which makes it
+the bar worth clearing.
+
+The 9×9 network **beats it as both first and second player using no search at all** — a single
+forward pass, playing the arg-max of the policy head, zero MCTS simulations. With search on top
+it is stronger still.
 
 The current network is the product of a from-scratch run on one desktop GPU:
 
@@ -32,12 +38,12 @@ The current network is the product of a from-scratch run on one desktop GPU:
 | Gradient steps | 319,000 |
 | Network | 128 filters × 10 residual blocks, KataGo-style global pooling every 3rd block |
 
-That is the headline point for anyone considering this approach: **superhuman-ish play on a
+That is the headline point for anyone considering this approach: **a strong engine for a
 non-trivial game, from random weights, in a day and a half on consumer hardware.**
 
-Progress is tracked by round-robin Elo tournaments between checkpoints
-(`runs/tournaments/`), which is the only reliable measure once the engine is past the point
-where a human — or the reference bot — can beat it.
+Past that point, measuring progress gets awkward — neither I nor the reference bot can beat it
+any more, so there's no external yardstick left. Improvement is tracked instead by round-robin
+Elo tournaments between checkpoints (`runs/tournaments/`).
 
 ---
 
