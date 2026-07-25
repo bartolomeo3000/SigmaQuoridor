@@ -75,9 +75,27 @@ The board edge blocks a jump the same way a wall does. Red stands on the top row
 directly below it, so there is no square behind red to land on — and the same two diagonal
 go-arounds open up.
 
-A diagonal is only legal if that landing square is itself on the board and not walled off from the
-opponent's square. If both the straight jump *and* a given diagonal are blocked, that direction is
-simply not a legal move.
+### …but only if the diagonal itself is clear
+
+<img src="docs/screenshots/rules/jump_diag_blocked.png" width="440" alt="One diagonal jump withheld because a wall blocks the sideways step">
+
+A blocked straight jump *offers* the diagonals — it doesn't guarantee them. Each diagonal is only
+legal if the **sideways step out of the opponent's square** is itself unobstructed, and that step
+has to clear both a wall and the board edge.
+
+Above, the horizontal wall blocks the straight jump as before, but a second wall now runs down the
+left side of the two pawns. Stepping from red's square to `(3,5)` would cross it, so **the up-left
+jump is not offered** — the engine leaves only `(5,5)` (up-right), plus the ordinary retreats to
+`(5,4)` and `(4,3)`. Note the same wall independently blocks green's plain left step to `(3,4)`.
+
+<img src="docs/screenshots/rules/jump_diag_both.png" width="440" alt="No jump at all: both diagonals blocked as well as the straight jump">
+
+Wall off **both** sides and the jump disappears entirely. With the straight jump and both diagonals
+blocked, green's only legal move here is to retreat to `(4,3)` — a single legal pawn move in the
+whole position.
+
+So a pawn standing face to face with its opponent has, in order: the straight jump if the square
+behind is free; otherwise whichever diagonals are individually reachable; otherwise no jump at all.
 
 ---
 
