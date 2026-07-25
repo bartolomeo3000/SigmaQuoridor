@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 520" width="1240" height="520" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="1240" height="520" rx="10" fill="#17181c"/>
+
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6b727c"/>
+    </marker>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+    </marker>
+    <marker id="av" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#e0574f"/>
+    </marker>
+  </defs>
+
+  <text x="34" y="42" fill="#e8e6e3" font-size="19" font-weight="600">One position in, two answers out</text>
+  <text x="34" y="66" fill="#9aa0a6" font-size="13.5">128 filters · 10 residual blocks · 9×9 board — the network behind every leaf evaluation in the search.</text>
+
+  <!-- ═══════ INPUT ═══════ -->
+  <text x="34" y="128" fill="#c9cdd3" font-size="14" font-weight="600">Board → 8 planes</text>
+  <g>
+    <rect x="52" y="196" width="86" height="86" rx="5" fill="#23262c" stroke="#5b6270" stroke-width="1.6"/>
+    <rect x="44" y="188" width="86" height="86" rx="5" fill="#262a31" stroke="#5b6270" stroke-width="1.6"/>
+    <rect x="36" y="180" width="86" height="86" rx="5" fill="#2a2e36" stroke="#7d8592" stroke-width="1.8"/>
+  </g>
+  <text x="79" y="228" fill="#c9cdd3" font-size="13" text-anchor="middle" font-weight="600">9 × 9</text>
+  <text x="79" y="246" fill="#9aa0a6" font-size="11.5" text-anchor="middle">× 8</text>
+  <text x="34" y="308" fill="#8a9099" font-size="11.5">my pawn · opponent pawn</text>
+  <text x="34" y="325" fill="#8a9099" font-size="11.5">h-walls · v-walls</text>
+  <text x="34" y="342" fill="#8a9099" font-size="11.5">walls in hand ×2</text>
+  <text x="34" y="359" fill="#8a9099" font-size="11.5">distance-to-goal ×2</text>
+  <path d="M150,228 L196,228" stroke="#6b727c" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- ═══════ TRUNK ═══════ -->
+  <rect x="204" y="150" width="392" height="158" rx="10" fill="#1c2530" stroke="#5aa9e6" stroke-width="2"/>
+  <text x="400" y="177" fill="#8fc7f0" font-size="14" text-anchor="middle" font-weight="600">Trunk — 10 residual blocks, 128 filters</text>
+
+  <rect x="222" y="196" width="26" height="52" rx="4" fill="#2a2d33" stroke="#5b6270" stroke-width="1.6"/>
+  <rect x="254" y="196" width="26" height="52" rx="4" fill="#2a2d33" stroke="#5b6270" stroke-width="1.6"/>
+  <rect x="286" y="196" width="26" height="52" rx="4" fill="#2f3a2c" stroke="#3fb950" stroke-width="2.2"/>
+  <rect x="318" y="196" width="26" height="52" rx="4" fill="#2a2d33" stroke="#5b6270" stroke-width="1.6"/>
+  <rect x="350" y="196" width="26" height="52" rx="4" fill="#2a2d33" stroke="#5b6270" stroke-width="1.6"/>
+  <rect x="382" y="196" width="26" height="52" rx="4" fill="#2f3a2c" stroke="#3fb950" stroke-width="2.2"/>
+  <rect x="414" y="196" width="26" height="52" rx="4" fill="#2a2d33" stroke="#5b6270" stroke-width="1.6"/>
+  <rect x="446" y="196" width="26" height="52" rx="4" fill="#2a2d33" stroke="#5b6270" stroke-width="1.6"/>
+  <rect x="478" y="196" width="26" height="52" rx="4" fill="#2f3a2c" stroke="#3fb950" stroke-width="2.2"/>
+  <rect x="510" y="196" width="26" height="52" rx="4" fill="#2a2d33" stroke="#5b6270" stroke-width="1.6"/>
+
+  <text x="299" y="266" fill="#3fb950" font-size="11" text-anchor="middle">▲</text>
+  <text x="395" y="266" fill="#3fb950" font-size="11" text-anchor="middle">▲</text>
+  <text x="491" y="266" fill="#3fb950" font-size="11" text-anchor="middle">▲</text>
+  <text x="400" y="288" fill="#79c98c" font-size="11.5" text-anchor="middle">every 3rd block also pools the whole board and feeds it back,</text>
+  <text x="400" y="302" fill="#79c98c" font-size="11.5" text-anchor="middle">so every square can see the global picture</text>
+
+  <text x="204" y="332" fill="#8a9099" font-size="11.5">3×3 conv → 128 channels, then 10 × (conv → conv → add the input back)</text>
+
+  <path d="M600,228 L646,228" stroke="#6b727c" stroke-width="2" marker-end="url(#a)"/>
+  <circle cx="654" cy="228" r="5" fill="#6b727c"/>
+  <path d="M654,228 L654,132 L700,132" stroke="#3fb950" stroke-width="2" fill="none" marker-end="url(#ag)"/>
+  <path d="M654,228 L654,396 L700,396" stroke="#e0574f" stroke-width="2" fill="none" marker-end="url(#av)"/>
+
+  <!-- ═══════ POLICY HEAD ═══════ -->
+  <text x="708" y="90" fill="#3fb950" font-size="15" font-weight="600">Policy head — “which moves are worth looking at?”</text>
+
+  <rect x="708" y="106" width="196" height="46" rx="8" fill="#1e2a20" stroke="#3fb950" stroke-width="1.8"/>
+  <text x="722" y="127" fill="#cfe8d4" font-size="12.5">trunk at both pawns + average</text>
+  <text x="722" y="144" fill="#8fbf9a" font-size="11.5">→ MLP → 8 pawn moves</text>
+
+  <rect x="708" y="162" width="196" height="42" rx="8" fill="#1e2a20" stroke="#3fb950" stroke-width="1.8"/>
+  <text x="722" y="181" fill="#cfe8d4" font-size="12.5">1×1 conv → 8×8 grid</text>
+  <text x="722" y="197" fill="#8fbf9a" font-size="11.5">→ 64 horizontal walls</text>
+
+  <rect x="708" y="214" width="196" height="42" rx="8" fill="#1e2a20" stroke="#3fb950" stroke-width="1.8"/>
+  <text x="722" y="233" fill="#cfe8d4" font-size="12.5">1×1 conv → 8×8 grid</text>
+  <text x="722" y="249" fill="#8fbf9a" font-size="11.5">→ 64 vertical walls</text>
+
+  <path d="M910,129 L952,160" stroke="#3fb950" stroke-width="1.8" fill="none" marker-end="url(#ag)"/>
+  <path d="M910,183 L952,178" stroke="#3fb950" stroke-width="1.8" fill="none" marker-end="url(#ag)"/>
+  <path d="M910,235 L952,200" stroke="#3fb950" stroke-width="1.8" fill="none" marker-end="url(#ag)"/>
+
+  <rect x="958" y="146" width="246" height="66" rx="9" fill="#213524" stroke="#3fb950" stroke-width="2.4"/>
+  <text x="1081" y="172" fill="#e8e6e3" font-size="14.5" text-anchor="middle" font-weight="600">136 numbers</text>
+  <text x="1081" y="194" fill="#9fd0aa" font-size="12" text-anchor="middle">one score per possible move</text>
+  <text x="1081" y="234" fill="#8a9099" font-size="11.5" text-anchor="middle">8 + 64 + 64 — illegal moves are masked out later</text>
+
+  <!-- ═══════ VALUE HEAD ═══════ -->
+  <text x="708" y="352" fill="#e0574f" font-size="15" font-weight="600">Value head — “who is winning?”</text>
+
+  <rect x="708" y="368" width="196" height="56" rx="8" fill="#2a1e1d" stroke="#e0574f" stroke-width="1.8"/>
+  <text x="722" y="391" fill="#f0d0cd" font-size="12.5">1×1 conv → 32 channels</text>
+  <text x="722" y="410" fill="#d09a95" font-size="11.5">average + peak over the board</text>
+
+  <path d="M910,396 L952,396" stroke="#e0574f" stroke-width="1.8" fill="none" marker-end="url(#av)"/>
+
+  <rect x="958" y="368" width="246" height="56" rx="9" fill="#3a201f" stroke="#e0574f" stroke-width="2.4"/>
+  <text x="1081" y="391" fill="#e8e6e3" font-size="14" text-anchor="middle" font-weight="600">1 number, −1 … +1</text>
+  <text x="1081" y="411" fill="#e2a49f" font-size="11.5" text-anchor="middle">from the mover's point of view</text>
+  <text x="1081" y="446" fill="#8a9099" font-size="11.5" text-anchor="middle">MLP → tanh</text>
+
+  <text x="620" y="492" fill="#7d838b" font-size="13" text-anchor="middle">The search uses both at every leaf: the move scores steer where it looks next, the winning estimate is what gets backed up the tree.</text>
+</svg>

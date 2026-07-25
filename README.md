@@ -72,6 +72,8 @@ board position:
 - a **policy** head — a probability over every legal move: *"which moves look worth considering?"*
 - a **value** head — a single number in [-1, +1]: *"who is winning, and by how much confidence?"*
 
+![The network: 8 input planes, a residual trunk, and the policy and value heads](docs/screenshots/network.svg)
+
 **The search.** The network alone is a decent intuition but a poor calculator, so it is wrapped
 in **Monte-Carlo Tree Search (MCTS)**. Each "simulation" walks down the game tree, picking moves
 that balance *the network's prior* against *how well that move has scored so far* and *how
