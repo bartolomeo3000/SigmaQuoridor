@@ -24,8 +24,10 @@ rather than a brick wall — it plays sensibly and a decent human can beat it �
 the bar worth clearing.
 
 My 9×9 network **beats it as both first and second player using no search at all** — a single
-forward pass, playing the arg-max of the policy head, zero MCTS simulations. With search on top
-it is stronger still.
+forward pass, playing the arg-max of the policy head, zero MCTS simulations.
+
+And that is its floor, not its ceiling. Hand it the search it was trained with — a few hundred
+MCTS simulations per move — and it plays at a completely different level again.
 
 Past that point, measuring progress gets awkward — neither I nor the reference bot can beat it
 any more, so there's no external yardstick left. Improvement is tracked instead by round-robin
