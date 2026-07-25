@@ -36,6 +36,24 @@ Past that point, measuring progress gets awkward — neither I nor the reference
 any more, so there's no external yardstick left. Improvement is tracked instead by round-robin
 Elo tournaments between checkpoints (`runs/tournaments/`).
 
+Those numbers above come from one such tournament, run on the search budget itself: one set of
+weights entered six times, at six simulation counts, everyone playing everyone, 200 games a pair.
+
+| simulations / move | Elo | score vs the field |
+|---|---:|---:|
+| 400 | 1776 | 83.1% |
+| 200 | 1700 | 74.9% |
+| 100 | 1539 | 55.0% |
+| 50 | 1483 | 47.6% |
+| 10 | 1277 | 22.5% |
+| **1** — the raw network, no search | 1225 | 17.1% |
+
+Roughly **550 Elo** separates the network on its own from the same network thinking for 400
+simulations — with nothing changed but how long it is allowed to look. Read the ends of that
+ladder rather than individual rungs: at 200 games a pair, neighbouring rows sit within noise of
+each other, and the searchless agent is deterministic, so its rows vary less than the game count
+suggests.
+
 ## Speed
 
 The current network is the product of a single from-scratch run on my personal desktop — not a
