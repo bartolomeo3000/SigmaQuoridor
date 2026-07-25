@@ -74,7 +74,10 @@ byte-identical. That's what [`tests/test_cpp_parity.py`](tests/test_cpp_parity.p
 Worth knowing if you're picking hardware: **on this machine the CPU is the bottleneck, not the
 GPU.** Tree search, move generation, the transposition table and the endgame solver all run on
 the CPU, and they kept all 8 cores pinned at 100% while the GPU frequently sat waiting for the
-next batch. A faster CPU would likely raise throughput more than a faster GPU would.
+next batch. More cores — or faster ones — would likely raise throughput more than a better GPU
+would. Core count especially: the games run independently, so search scales across as many
+threads as you can give it (`--threads`), and keeping more games in flight is also what keeps the
+GPU's inference batches large.
 
 ---
 
