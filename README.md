@@ -76,7 +76,7 @@ byte-identical. That's what [`tests/test_cpp_parity.py`](tests/test_cpp_parity.p
 
 ## How it works (AlphaZero in five minutes)
 
-If you already know AlphaZero, skip to [Setup](#setup).
+If you already know AlphaZero, skip to [Using the web app](#using-the-web-app).
 
 Classical engines (Stockfish-style) search deeply and score positions with a hand-written
 evaluation function. AlphaZero replaces the hand-written parts with a neural network that is
@@ -123,11 +123,11 @@ Nothing in that loop knows anything about Quoridor beyond the legal-move generat
 That is why the approach ports to other games — see
 [Adapting this to another game](#adapting-this-to-another-game).
 
-**Where this implementation differs from the paper:**
+**Where this implementation differs from some other approaches:**
 
 - **No promotion gate.** Every cycle's weights are kept; there's no "only accept the new network
-  if it beats the old one by 55%" step. Progress is verified after the fact with tournaments.
-- **Exact endgame solver.** Once few enough walls remain, positions are solved exactly by
+  if it beats the old one by 55%" step. Progress can be verified after the fact with tournaments.
+- **(Optional) exact endgame solver.** Once few enough walls remain, positions are solved exactly by
   alpha-beta instead of guessed by the network, giving perfect training labels for endgames.
 - **A shared transposition table** caches network evaluations across the thousands of games
   running concurrently, which is a large part of the throughput.
