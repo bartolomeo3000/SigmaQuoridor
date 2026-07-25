@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A personal (solo) project building a super-human agent for the board game Quoridor, using an
 AlphaZero-style MCTS+neural-network agent. It originated as a team "Advanced Machine Learning"
-course project (see [README.md](README.md), [CHECKPOINT.md](CHECKPOINT.md)) that also explored
-tabular RL baselines (Q-learning/SARSA) — that RL track (`rl_models.py`, `rl_train_evaluate.py`)
-was course-scoped and is no longer being developed; don't spend effort maintaining or extending
-it. There's also a Flask web app and a static GitHub Pages frontend (`docs/`) for playing against
-exported models in-browser via ONNX.
+course project (see [README.md](README.md)) that also explored tabular RL baselines
+(Q-learning/SARSA). **That RL track was deleted on 2026-07-25** — `rl_models.py`,
+`rl_train_evaluate.py`, `export_simple_rl_json.py`, the Flask/JS agent options, and
+`docs/models/simple_rl/` are all gone. Don't reintroduce it. There's also a Flask web app and a
+static GitHub Pages frontend (`docs/`) for playing against exported models in-browser via ONNX.
 
 **Read [docs/cpp_selfplay_notes.md](docs/cpp_selfplay_notes.md) before touching `cpp/engine.hpp`,
 `cpp/selfplay.hpp`, `cpp/tournament.hpp`, `selfplay_cpp.py`, `tournament_cpp.py`, `train.py`, or
@@ -25,8 +25,8 @@ and are NOT valid throughput baselines for CUDA — see below).
   system-wide install of the dependencies.
 - Install deps: `pip install -r requirements.txt` (flask, waitress, numpy, torch, tqdm, pandas,
   joblib, pybind11).
-- No test framework/pytest config — verification scripts are plain argparse CLIs run directly
-  (see below), not `pytest`-discovered tests.
+- No test framework/pytest config — the verification scripts in `tests/` are plain argparse CLIs
+  run directly (`python tests/test_cpp_parity.py --games 50`), not `pytest`-discovered tests.
 - Development/benchmarking has mostly happened on an M1 MacBook Air (MPS). Target production
   machine is a Ryzen 8c/8t + RTX 5070 Ti, 32GB (CUDA). **MPS and CUDA throughput numbers are not
   comparable** — treat any M1-measured games/hour, evals/s, or tuned batch sizes as "the pipeline
@@ -55,26 +55,26 @@ python setup_cpp.py build_ext --inplace
 
 ```bash
 # Verify the C++ engine matches the Python reference engine (run after any engine change)
-python test_cpp_parity.py --games 50
+python tests/test_cpp_parity.py --games 50
 
 # Full AlphaZero training loop (C++ self-play + train, alternated as subprocesses)
 python cpp_train_loop.py --cycles 20 --games 500 --sims 400
 
 # Self-play data generation only (writes cycle_NNNN.npz, does not touch best.pt)
-python selfplay_cpp.py --model models_9x9/best.pt --out-dir data_9x9 --games 1024 --sims 800
+python selfplay_cpp.py --model runs/models_9x9/best.pt --out-dir runs/data_9x9 --games 1024 --sims 800
 
 # Train on existing data only (updates best.pt/checkpoint, generates no new data)
 python train.py --resume --train-only --cycles 1
 
 # C++ round-robin Elo tournament between checkpoints
-python tournament_cpp.py --dir models_9x9/checkpoints --games 100
+python tournament_cpp.py --dir runs/models_9x9/checkpoints --games 100
 
 # Play against the agent in a browser
 python app.py --port 5000
 ```
 
-`selfplay_cpp.py` and `train.py` each tee stdout/stderr to `logs/selfplay_<timestamp>.log` /
-`logs/train_<timestamp>.log` (smoke-test runs of `train.py` skip file logging).
+`selfplay_cpp.py` and `train.py` each tee stdout/stderr to `runs/logs/selfplay_<timestamp>.log` /
+`runs/logs/train_<timestamp>.log` (smoke-test runs of `train.py` skip file logging).
 
 ## Architecture
 
@@ -84,10 +84,10 @@ python app.py --port 5000
 legal-move generation, BFS pathfinding, action encoding (`action_to_index`/`index_to_action`).
 `cpp/engine.hpp` + `cpp/bindings.cpp` compile to `quoridor_cpp`, a **second, from-scratch
 implementation** of the same rules (not a wrapper around `game.py`) used for fast batched
-self-play/tournaments. The two are kept behaviorally identical by `test_cpp_parity.py`, which
+self-play/tournaments. The two are kept behaviorally identical by `tests/test_cpp_parity.py`, which
 plays identical action sequences through both and asserts matching legal moves/results across
 board sizes. Any change to game rules must be made in both places and re-verified with
-`test_cpp_parity.py`.
+`tests/test_cpp_parity.py`.
 
 ### AlphaZero pipeline (two parallel implementations: pure-Python and C++-accelerated)
 
@@ -108,8 +108,13 @@ board sizes. Any change to game rules must be made in both places and re-verifie
 
 ### Model/data directory lineages
 
-Each board-size lineage is a matched `models_<N>x<N>` / `data_<N>x<N>` pair (checkpoints and
-self-play data are architecture/board-size-specific and not interchangeable across lineages).
+**All generated artifacts live under `runs/`** — model lineages, self-play data, tournament
+results (`runs/tournaments/`), and logs (`runs/logs/`, the only gitignored part). Source code
+stays at the repo root; `docs/` is pinned there too because GitHub Pages serves it. Paths are
+resolved relative to the current working directory, so run everything **from the repo root**.
+
+Each board-size lineage is a matched `runs/models_<N>x<N>` / `runs/data_<N>x<N>` pair (checkpoints
+and self-play data are architecture/board-size-specific and not interchangeable across lineages).
 `models_9x9`/`data_9x9` is the currently active lineage in `train.py`, `cpp_train_loop.py`, and
 `app.py`'s serving defaults. `models_7x7`/`data_7x7` is an older lineage, still used by
 `tournament_cpp.py`'s default `--dir`. When changing which lineage a script targets, its
@@ -117,15 +122,6 @@ model-dir and data-dir constants must be changed together — they're paired, no
 Watch for stale hardcoded `best.pt` paths in eval-opponent lists (e.g. `train.py`'s
 `EVAL_OPPONENTS`) after changing a script's active lineage — a hardcoded opponent path equal to
 the current model dir's `best.pt` silently turns evaluation into a self-comparison.
-
-### RL baseline track (legacy, not actively developed)
-
-`rl_models.py` defines tabular agents (`QLearningAgent`, `SarsaAgent`, `ExpectedSarsaAgent`, and
-Double- variants) hardcoded to a small `BOARDSIZE = 3` — this track targets tiny boards, not the
-7x7/9x9 boards the AlphaZero track uses. `rl_train_evaluate.py` is its self-play/eval/promote
-driver, writing to its own `BEST_DIR/*.pkl`, unrelated to `models_*`/`data_*`. This was a
-course-requirement comparison point and is no longer part of the project's direction — treat it
-as frozen/legacy, not something to extend.
 
 ### Evaluation / benchmarking
 
@@ -137,11 +133,23 @@ pairs one at a time (not concurrently) due to GIL contention across multiple loa
 worth using for large `--games` per pair (100s), not small smoke scans. Minimax agents currently
 only exist in Python (`eval_vs_minimax.py`); no C++ port yet.
 
+Tournament output lives in `runs/tournaments/<series>/vN.csv` (+ `vN_matchups.csv` and a
+`vN_matchups.csv.meta.json` config sidecar); ad-hoc runs default to `runs/tournaments/adhoc/`.
+A *series* is a chain of runs that each reuse the previous one's games via `--baseline`, so
+adding a checkpoint only plays the new pairings. `tournament_cpp.py --series <name> --add
+<model.pt>` derives all of it from the latest `vN` — output path, baseline, roster (from the
+`model` column), games/pair, and the rules config (from the sidecar) — so no paths need
+hand-writing. Explicit flags override what's inherited, but changing a rules flag makes the
+baseline incompatible and silently forces a **full** replay of every pair. The active series
+is `scratch_vs_heads` (fresh `models_9x9_scratch` run vs. the old `models_9x9_heads/best.pt`);
+see the `tournament-add-cycle` skill. Don't delete a checkpoint that appears in a series
+roster — reuse matches on model path, so its pairs become unreplayable.
+
 ### Serving and browser frontend
 
-`app.py` is a Flask server (default 9x9, `models_9x9`) for playing against a served PyTorch model.
-`export_onnx.py` converts trained `.pt` checkpoints to ONNX for `docs/models*/`; `export_simple_rl_json.py`
-dumps the tabular RL agents to JSON. `docs/` is a separate static GitHub Pages frontend —
+`app.py` is a Flask server (default 9x9, `runs/models_9x9_heads`) for playing against a served
+PyTorch model. `export_onnx.py` converts trained `.pt` checkpoints to ONNX for `docs/models*/`.
+`docs/` is a separate static GitHub Pages frontend —
 `docs/game.js` and `docs/mcts_worker.js` are a from-scratch **JavaScript** reimplementation of the
 engine/MCTS (a third engine implementation, running the exported ONNX model client-side), not a
 consumer of `game.py`/`quoridor_cpp`. Its board-variant default (7x7) does not necessarily match
@@ -149,8 +157,18 @@ consumer of `game.py`/`quoridor_cpp`. Its board-variant default (7x7) does not n
 
 ## Working notes
 
-- Files prefixed `_` at the repo root (e.g. `_analyze_illegal_policy.py`, `_bench_nn.py`,
-  `_replay_game.py`) are one-off analysis/debugging scripts, not part of the maintained pipeline.
+- `tools/` holds one-off analysis/debugging/setup scripts (e.g. `tools/_analyze_illegal_policy.py`,
+  `tools/_bench_nn.py`, `tools/reset_heads.py`, `tools/init_head_redesign.py`) — not part of the
+  maintained pipeline. The `_`-prefixed ones keep that prefix for continuity; scripts moved in
+  later (`reset_heads.py`, `init_head_redesign.py`) don't have it, so the prefix no longer means
+  anything beyond history. `tests/` holds the verification CLIs and follows the same rules.
+  Run both from the repo root (`python tools/_bench_nn.py`, `python tests/test_cpp_parity.py`): they
+  import their directory's `_bootstrap.py` first (each dir has its own copy), which puts the repo
+  root on `sys.path` so `game`, `dual_network`, `mcts`, `train` and the compiled `quoridor_cpp`
+  resolve from one level up. `_bootstrap` fixes imports only, not the working directory — several
+  still use cwd-relative data paths (`models_7x7/best.pt` etc.), so don't `cd` into the directory
+  to run them. A new script in either dir that imports a project module needs
+  `import _bootstrap  # noqa: F401` above that import, or it will fail with ModuleNotFoundError.
 - `data_7x7/`, `data_9x9/`, `models_7x7/`, `models_9x9/` contain real training artifacts
   (`.npz` self-play data, `.pt` checkpoints) — large binary files, not source; don't read them
   as code and be careful about what you stage if committing near them.

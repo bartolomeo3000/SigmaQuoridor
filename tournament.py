@@ -47,7 +47,7 @@ DEFAULT_SIMS     = 800
 DEFAULT_GAMES    = 4     # per pair; must be even (split P1/P2)
 DEFAULT_TEMP     = 1.0   # stochastic sampling — essential for Elo estimation
 DEFAULT_WORKERS  = os.cpu_count() or 1
-DEFAULT_SIGMA_MODEL = "models_7x7/supervised_extended.pt"
+DEFAULT_SIGMA_MODEL = "runs/models_7x7/supervised_extended.pt"
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ def name_to_spec(name: str, ckpt_dir: Path | None) -> str:
         candidates = []
         if ckpt_dir is not None:
             candidates.extend([ckpt_dir / f"{stem}.pt", ckpt_dir.parent / f"{stem}.pt"])
-        candidates.extend([Path("models_7x7") / f"{stem}.pt", Path("models_7x7_v2") / f"{stem}.pt"])
+        candidates.extend([Path("runs/models_7x7") / f"{stem}.pt", Path("runs/models_7x7_v2") / f"{stem}.pt"])
         for candidate in candidates:
             if candidate.exists():
                 return f"raw:{candidate}"

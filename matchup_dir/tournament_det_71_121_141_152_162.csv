@@ -1,6 +1,0 @@
-rank,model,elo,wins,draws,losses,games,score_pct,sims,temperature
-1,models_7x7\checkpoints\cycle_0162.pt,1704.80,6,0,2,8,75.00,800,0.0
-2,models_7x7\checkpoints\cycle_0152.pt,1704.80,6,0,2,8,75.00,800,0.0
-3,models_7x7\checkpoints\cycle_0071.pt,1607.36,5,0,3,8,62.50,800,0.0
-4,models_7x7\checkpoints\cycle_0121.pt,1303.52,2,0,6,8,25.00,800,0.0
-5,models_7x7\checkpoints\cycle_0141.pt,1179.52,1,0,7,8,12.50,800,0.0

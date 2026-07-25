@@ -1,0 +1,11 @@
+rank,model,elo,wins,draws,losses,games,score_pct
+1,runs\models_9x9_heads\best.pt,1949.43,3620,119,761,4500,81.77
+2,runs\models_9x9_scratch\checkpoints\cycle_0186.pt,1879.84,3363,23,1114,4500,74.99
+3,runs\models_9x9_scratch\checkpoints\cycle_0159.pt,1824.89,3093,38,1369,4500,69.16
+4,runs\models_9x9_scratch\checkpoints\cycle_0133.pt,1763.99,2794,32,1674,4500,62.44
+5,runs\models_9x9_scratch\checkpoints\cycle_0106.pt,1747.33,2691,72,1737,4500,60.60
+6,runs\models_9x9_scratch\checkpoints\cycle_0105.pt,1738.77,2668,33,1799,4500,59.66
+7,runs\models_9x9_scratch\checkpoints\cycle_0090.pt,1640.71,2193,43,2264,4500,49.21
+8,runs\models_9x9_scratch\checkpoints\cycle_0061.pt,1404.26,1318,61,3121,4500,29.97
+9,runs\models_9x9_scratch\checkpoints\cycle_0031.pt,897.43,503,78,3919,4500,12.04
+10,runs\models_9x9_scratch\checkpoints\cycle_0002.pt,153.36,0,15,4485,4500,0.17

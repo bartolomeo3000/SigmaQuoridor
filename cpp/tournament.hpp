@@ -7,7 +7,7 @@
 //   * No Dirichlet root noise, no dist-heuristic bonus, no tau1/tau0
 //     temp_threshold ply-schedule -- each agent has one constant
 //     `temperature` for the whole game (0 = deterministic argmax, matching
-//     _matchup.py; >0 = visits^(1/temperature) sampling, matching
+//     tools/_matchup.py; >0 = visits^(1/temperature) sampling, matching
 //     tournament.py/tournament_simcounts.py).
 //   * No recorded training trajectory -- only the final (winner, plies) is
 //     reported per game.

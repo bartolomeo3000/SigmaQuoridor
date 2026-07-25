@@ -13,3 +13,7 @@ It even wins at 400 sims! Even at 200 sims it still won!
 
 (20.07.2026) After the heads redesign and supervised training on latest gathered data, a the NN came out so good, that it wins as P1 and P2 without MCTS! (equivalent to 1 sim, only the NN policy argmax played in each position)
 It won't get much better than that i guess. I mean it could, but there will be no way to evaluate progress besides self-play against older checkpoints. Since I can't beat the agent already and neither can the eval gorisanson bot.
+
+(25.07.2026) The fresh from-scratch 9x9 run finally beat the old best (heads cycle 56).
+Cycle 244 wins 63.8% h2h over 500 games (315W-8D-177L) and takes rank 1 in the v6 tournament (100 sims, temp 0.5).
+First crossover was cycle 218 at ~53%, now 244 is at 63.8%. Still climbing: 65.5% vs 218, 68.8% vs 207.

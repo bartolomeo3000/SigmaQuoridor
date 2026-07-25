@@ -16,8 +16,8 @@ number of cycles:
                           produced), overwrites best.pt, saves a checkpoint,
                           appends a training_stats.csv row.
 
-Both scripts agree on the fixed paths MODEL_PATH (default models_9x9_heads/best.pt)
-and DATA_DIR (default data_9x9_fix), overridable via --model-dir/--data-dir, so
+Both scripts agree on the fixed paths MODEL_PATH (default models_9x9_scratch/best.pt)
+and DATA_DIR (default data_9x9_scratch), overridable via --model-dir/--data-dir, so
 nothing needs to be passed between the two steps beyond those paths.
 
 Example:
@@ -28,9 +28,10 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 
-MODEL_PATH = "models_9x9_heads/best.pt"
-DATA_DIR = "data_9x9_fix"
+MODEL_PATH = "runs/models_9x9_scratch/best.pt"
+DATA_DIR = "runs/data_9x9_scratch"
 
 
 def main() -> None:
@@ -98,8 +99,13 @@ def main() -> None:
     if args.data_dir is not None:
         data_dir = args.data_dir
     elif args.model_dir is not None:
-        base = os.path.basename(os.path.normpath(model_dir))
-        data_dir = ("data_" + base[len("models_"):]) if base.startswith("models_") else DATA_DIR
+        # Swap the models_/data_ prefix but keep the parent dir: lineages live
+        # side by side under runs/, so basename alone would resolve to a
+        # non-existent top-level data_<x> and silently self-play into it.
+        norm = os.path.normpath(model_dir)
+        base = os.path.basename(norm)
+        data_dir = (os.path.join(os.path.dirname(norm), "data_" + base[len("models_"):])
+                    if base.startswith("models_") else DATA_DIR)
     else:
         data_dir = DATA_DIR
 
@@ -145,12 +151,18 @@ def main() -> None:
             selfplay_cmd.append("--bf16")
         if args.compile:
             selfplay_cmd.append("--compile")
+        t_selfplay = time.perf_counter()
         subprocess.run(selfplay_cmd, check=True)
+        selfplay_time_s = time.perf_counter() - t_selfplay
 
         print(f"\n{'#' * 70}\n# Cycle {cycle + 1}/{args.cycles}: train\n{'#' * 70}")
+        # Pass the self-play wall time so train.py can record self-play + training
+        # in training_stats.csv (self-play ran here, in a separate subprocess, so
+        # train.py can't measure it itself).
         train_cmd = [
             sys.executable, "train.py", "--resume", "--train-only", "--cycles", "1",
             "--model-dir", model_dir, "--data-dir", data_dir,
+            "--selfplay-time-s", f"{selfplay_time_s:.1f}",
         ]
         if args.train_positions is not None:
             train_cmd += ["--train-positions", str(args.train_positions)]

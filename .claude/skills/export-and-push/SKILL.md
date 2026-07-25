@@ -26,12 +26,12 @@ unless the user explicitly asks for them in a given run.
    ```
    # Recover the currently-LIVE model (the previously exported best.pt) from git,
    # so we compare against exactly what's on the site right now:
-   git show HEAD:models_9x9_heads/best.pt > /tmp/prev_exported_best.pt
+   git show HEAD:runs/models_9x9_heads/best.pt > /tmp/prev_exported_best.pt
 
    # Small regression tournament: new best.pt vs the previously-exported model.
    # (--dir . globs no checkpoints at repo root, so only the two --extra models play.)
    .venv/Scripts/python tournament_cpp.py --dir . \
-     --extra models_9x9_heads/best.pt \
+     --extra runs/models_9x9_heads/best.pt \
      --extra /tmp/prev_exported_best.pt \
      --games 100 --temp 0.5 --sims 800 --boardsize 9 --walls 10 \
      --threads 7 --parallel 512 --max-batch 512
@@ -56,7 +56,7 @@ unless the user explicitly asks for them in a given run.
 
 2. **Check what changed.**
    ```
-   git status --short docs/ models_9x9_heads/best.pt models_9x9_heads/training_stats.csv models_9x9/best.pt models_9x9/training_stats.csv models_7x7/best.pt models_7x7/training_stats.csv
+   git status --short docs/ runs/models_9x9_heads/best.pt runs/models_9x9_heads/training_stats.csv runs/models_9x9/best.pt runs/models_9x9/training_stats.csv runs/models_7x7/best.pt runs/models_7x7/training_stats.csv
    ```
    Only lineages with an actual training update will show diffs — that's expected and fine.
 
@@ -71,7 +71,7 @@ unless the user explicitly asks for them in a given run.
    If a modified/new file's name matches a picker entry that used to point at a
    *different* lineage's history, flag it to the user and ask how to proceed (accept the
    overwrite, rename to avoid collision, or skip that file) — don't decide silently, this
-   happened once already (models_9x9_heads export overwrote models_9x9-legacy picker
+   happened once already (runs/models_9x9_heads export overwrote models_9x9-legacy picker
    entries) and the resolution depends on whether the user still wants that old history
    browsable.
 
@@ -87,7 +87,7 @@ unless the user explicitly asks for them in a given run.
      serving)
 
 5. **Commit** with a short message naming the lineage and cycle number reached, e.g.
-   `export onnx from latest models_9x9_heads best.pt (cycle N)`. If step 3 surfaced a
+   `export onnx from latest runs/models_9x9_heads best.pt (cycle N)`. If step 3 surfaced a
    collision that the user asked to accept, mention that in the commit body.
 
 6. **Push** to the current branch's upstream (`git push origin <branch>` — this repo

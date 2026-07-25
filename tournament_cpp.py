@@ -35,6 +35,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import threading
 import time
 from itertools import combinations
@@ -47,7 +48,7 @@ import quoridor_cpp
 from dual_network import load_model
 from tournament import BOARDSIZE, WALLS_PER_PLAYER, compute_elo
 
-LOG_DIR = "logs"
+LOG_DIR = "runs/logs"
 
 
 def pick_device() -> torch.device:
@@ -148,7 +149,7 @@ def build_roster(args) -> tuple[list[str], list[str], list[int]]:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--dir", default="models_7x7/checkpoints",
+    p.add_argument("--dir", default="runs/models_7x7/checkpoints",
                    help="Directory containing cycle_*.pt checkpoint files")
     p.add_argument("--extra", action="append", default=[], metavar="PATH",
                    help="Extra model file(s) to include (repeatable)")
@@ -157,24 +158,160 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sim", action="append", type=int, default=[], metavar="N",
                    help="Simulation budget to include with --model (repeatable); "
                         "activates simcounts mode instead of checkpoint round-robin")
-    p.add_argument("--sims", type=int, default=800,
-                   help="Sims/move for checkpoint round-robin mode")
-    p.add_argument("--games", type=int, default=4, metavar="N",
-                   help="Games per pair (even; split equally by colour)")
-    p.add_argument("--temp", type=float, default=1.0,
-                   help="Sampling temperature (0 = deterministic argmax)")
-    p.add_argument("--c-puct", type=float, default=1.0)
-    p.add_argument("--fpu", type=float, default=0.1)
-    p.add_argument("--boardsize", type=int, default=BOARDSIZE)
-    p.add_argument("--walls", type=int, default=WALLS_PER_PLAYER)
-    p.add_argument("--max-moves", type=int, default=100)
+    # These eight are "inheritable": under --series they default to whatever the
+    # previous version of the series used (so a follow-up run is config-identical
+    # by construction, which is what makes --baseline reuse work). Passing one
+    # explicitly always wins. default=None is how "not passed" is detected --
+    # the real fallbacks live in _INHERITABLE_DEFAULTS.
+    p.add_argument("--sims", type=int, default=None,
+                   help="Sims/move for checkpoint round-robin mode (default: 800, "
+                        "or inherited under --series)")
+    p.add_argument("--games", type=int, default=None, metavar="N",
+                   help="Games per pair (even; split equally by colour) "
+                        "(default: 4, or inherited under --series)")
+    p.add_argument("--temp", type=float, default=None,
+                   help="Sampling temperature (0 = deterministic argmax) "
+                        "(default: 1.0, or inherited under --series)")
+    p.add_argument("--c-puct", type=float, default=None)
+    p.add_argument("--fpu", type=float, default=None)
+    p.add_argument("--boardsize", type=int, default=None)
+    p.add_argument("--walls", type=int, default=None)
+    p.add_argument("--max-moves", type=int, default=None)
     p.add_argument("--threads", type=int, default=8, help="MCTS worker threads")
     p.add_argument("--parallel", type=int, default=128, help="concurrent games")
     p.add_argument("--max-batch", type=int, default=256)
     p.add_argument("--flush-us", type=int, default=500)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="", help="Optional CSV path for summary results")
-    return p.parse_args()
+    p.add_argument("--baseline", type=str, default="", metavar="PATH",
+                   help="Prior run's *_matchups.csv. Pairs already fully played there "
+                        "(matched by model path, same --games count) are reused instead "
+                        "of resimulated -- only pairs touching a genuinely new model get "
+                        "played. Every run also writes a small sidecar next to its own "
+                        "matchups CSV recording sims/temp/c-puct/fpu/boardsize/walls/"
+                        "max-moves, so a later --baseline with an incompatible config is "
+                        "detected and ignored (with a warning) rather than silently mixed "
+                        "into one Elo table.")
+    p.add_argument("--series", type=str, default="", metavar="NAME",
+                   help="Run as the next version of a tournament series kept in "
+                        "<--series-dir>/NAME (e.g. 'scratch_vs_heads'). Finds the latest "
+                        "vN there and derives everything from it: --out becomes v(N+1).csv, "
+                        "--baseline becomes vN_matchups.csv, the roster is inherited from "
+                        "vN.csv's model column, and --games plus the rules config are "
+                        "inherited from vN's sidecar -- so an extension run needs no "
+                        "hand-written paths, just --add. An empty/new series starts at v1.")
+    p.add_argument("--add", action="append", default=[], metavar="PATH",
+                   help="Model(s) to append to the roster inherited by --series "
+                        "(repeatable). This is the normal way to extend a series: every "
+                        "prior model is carried over and reused from the baseline, so only "
+                        "pairs involving the added model(s) are actually played.")
+    p.add_argument("--series-dir", type=str, default="runs/tournaments", metavar="DIR",
+                   help="Root directory holding tournament series (default: tournaments)")
+
+    args = p.parse_args()
+    if args.series:
+        _apply_series(args)
+    # Fill in any inheritable option the user didn't pass and --series didn't supply.
+    for name, default in _INHERITABLE_DEFAULTS.items():
+        if getattr(args, name) is None:
+            setattr(args, name, default)
+    return args
+
+
+# ── Tournament series (tournaments/<name>/vN.csv) ───────────────────────────
+#
+# A "series" is just a directory of versioned runs that each reuse the previous
+# one via --baseline. Everything a follow-up run needs is already recorded in
+# the previous version's files, so --series reads it back instead of making the
+# caller retype it:
+#
+#   vN.csv                        -> the roster (its `model` column) + games/pair
+#   vN_matchups.csv               -> the --baseline to reuse
+#   vN_matchups.csv.meta.json     -> the rules config (sims/temp/c_puct/...)
+#
+# Deriving the roster from the CSV (rather than a separate manifest) keeps a
+# single source of truth: the names stored there are the exact strings
+# --baseline matches pairs on, so inheritance can't drift out of sync with it.
+
+_INHERITABLE_DEFAULTS = {
+    "sims": 800, "games": 4, "temp": 1.0, "c_puct": 1.0, "fpu": 0.1,
+    "boardsize": BOARDSIZE, "walls": WALLS_PER_PLAYER, "max_moves": 100,
+}
+
+# Sidecar key -> args attribute. Mirrors _config_signature()'s schema.
+_META_TO_ARG = {
+    "sims": "sims", "temp": "temp", "c_puct": "c_puct", "fpu": "fpu",
+    "boardsize": "boardsize", "walls": "walls", "max_moves": "max_moves",
+}
+
+
+def _series_versions(d: Path) -> list[int]:
+    """Version numbers of completed runs in a series dir (v3.csv -> 3).
+    Only bare vN.csv counts -- vN_matchups.csv is a companion, not a version."""
+    out = []
+    for p in d.glob("v*.csv"):
+        m = re.fullmatch(r"v(\d+)", p.stem)
+        if m:
+            out.append(int(m.group(1)))
+    return sorted(out)
+
+
+def _apply_series(args) -> None:
+    """Resolve --series into concrete --out/--baseline/--extra/config values."""
+    d = Path(args.series_dir) / args.series
+    d.mkdir(parents=True, exist_ok=True)
+    versions = _series_versions(d)
+    inherited: list[str] = []
+
+    if versions:
+        n = versions[-1]
+        prev_csv, prev_matchups = d / f"v{n}.csv", d / f"v{n}_matchups.csv"
+        with open(prev_csv, newline="") as f:
+            rows = list(csv.DictReader(f))
+        # The `model` column holds the roster names, which for --extra-supplied
+        # models are their full paths -- exactly what --baseline matches on.
+        inherited = [r["model"] for r in rows]
+        # Each model played (k-1) pairs, --games each.
+        if args.games is None and len(rows) > 1 and rows[0].get("games"):
+            args.games = int(rows[0]["games"]) // (len(rows) - 1)
+        meta_p = Path(_meta_path(str(prev_matchups)))
+        if meta_p.exists():
+            with open(meta_p) as f:
+                meta = json.load(f)
+            for key, attr in _META_TO_ARG.items():
+                if getattr(args, attr) is None and key in meta:
+                    setattr(args, attr, meta[key])
+        if not args.baseline and prev_matchups.exists():
+            args.baseline = str(prev_matchups)
+        new_version = n + 1
+        print(f"Series {args.series!r}: extending v{n} -> v{new_version}  "
+              f"({len(inherited)} model(s) inherited, {len(args.add)} added)")
+    else:
+        new_version = 1
+        print(f"Series {args.series!r}: no existing versions in {d} -- starting at v1")
+
+    if not args.out:
+        args.out = str(d / f"v{new_version}.csv")
+
+    # Roster = inherited + --add + any explicit --extra, de-duplicated in order.
+    # Compare on the normalised path, not the raw string: the inherited names use
+    # OS separators ('a\b.pt') while a hand-typed --add usually has forward
+    # slashes ('a/b.pt'). Those are the same file, but as bare strings they look
+    # distinct -- which would silently register one model twice as two separate
+    # agents (extra pairs played, and its Elo fitted against a copy of itself).
+    # Store the normalised form too, so roster names match what --baseline
+    # recorded for the same model.
+    seen, roster = set(), []
+    for m in inherited + list(args.add) + list(args.extra):
+        norm = os.path.normpath(m)
+        key = os.path.normcase(norm)
+        if key not in seen:
+            seen.add(key)
+            roster.append(norm)
+    args.extra = roster
+    # build_roster() also globs --dir for cycle_*.pt; point it at the series dir
+    # (which has none) so the roster is exactly what we assembled here.
+    args.dir = str(d)
 
 
 def play_pair(args, i: int, j: int, agent_model_ids: list[int],
@@ -293,6 +430,97 @@ def _load_progress(path, signature):
     return data
 
 
+# ── Baseline reuse (skip pairs a prior run already fully played) ────────────
+#
+# --baseline points at a prior run's *_matchups.csv. Pairs are matched by
+# MODEL PATH (not roster label -- a checkpoint can be named differently across
+# separate invocations), and only reused if the baseline has exactly --games
+# games recorded for that pair. A sidecar next to every matchups CSV records
+# the per-game rules config (sims/temp/c_puct/fpu/boardsize/walls/max_moves);
+# a mismatch there means the baseline games weren't played under comparable
+# conditions (e.g. different sims/move), so it's disabled with a warning
+# rather than silently merged into one Elo table.
+
+def _config_signature(args) -> dict:
+    return {
+        "sims": args.sims, "temp": args.temp, "c_puct": args.c_puct,
+        "fpu": args.fpu, "boardsize": args.boardsize, "walls": args.walls,
+        "max_moves": args.max_moves,
+    }
+
+
+def _meta_path(matchup_path: str) -> str:
+    return matchup_path + ".meta.json"
+
+
+def _write_run_meta(matchup_path: str, args) -> None:
+    with open(_meta_path(matchup_path), "w") as f:
+        json.dump(_config_signature(args), f)
+
+
+def _load_baseline(path: str, args) -> dict[frozenset, list[dict]] | None:
+    """Returns {frozenset({path_a, path_b}): [matchup rows]} grouped by pair,
+    or None if the baseline should be ignored entirely (incompatible config)."""
+    if not os.path.exists(path):
+        raise SystemExit(f"--baseline file not found: {path}")
+
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    required = {"agent_a", "agent_b", "player1", "player2", "result", "score_for_a", "plies"}
+    if rows and not required.issubset(rows[0].keys()):
+        raise SystemExit(
+            f"--baseline file {path} doesn't look like a *_matchups.csv "
+            f"(missing columns: {required - rows[0].keys()})"
+        )
+
+    meta_path = _meta_path(path)
+    current_cfg = _config_signature(args)
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            baseline_cfg = json.load(f)
+        if baseline_cfg != current_cfg:
+            print(f"WARNING: --baseline {path} was run under a different config "
+                  f"({baseline_cfg}) than this run ({current_cfg}) -- ignoring "
+                  f"baseline, all pairs will be replayed.\n")
+            return None
+    else:
+        print(f"WARNING: --baseline {path} has no config sidecar ({meta_path} not "
+              f"found -- predates this feature). Can't verify it was played under "
+              f"the same sims/temp/rules as this run ({current_cfg}); using it "
+              f"anyway on trust.\n")
+
+    pairs: dict[frozenset, list[dict]] = {}
+    for row in rows:
+        pairs.setdefault(frozenset({row["agent_a"], row["agent_b"]}), []).append(row)
+    return pairs
+
+
+def _reuse_baseline_pair(baseline_rows, i, j, names, model_paths):
+    """Translate a baseline pair's rows (labeled by model path) into this
+    run's (i, j, score_for_i) + game_log dict format. Returns None if the row
+    labels don't resolve cleanly onto (model_paths[i], model_paths[j])."""
+    path_i, path_j = model_paths[i], model_paths[j]
+    out_results = []
+    out_logs = []
+    for row in baseline_rows:
+        a_path, b_path = row["agent_a"], row["agent_b"]
+        if a_path == path_i and b_path == path_j:
+            score_i = float(row["score_for_a"])
+        elif a_path == path_j and b_path == path_i:
+            score_i = 1.0 - float(row["score_for_a"])
+        else:
+            return None  # shouldn't happen -- grouping key already matched these paths
+        p1_idx = i if row["player1"] == path_i else j
+        p2_idx = i if row["player2"] == path_i else j
+        out_results.append((i, j, score_i))
+        out_logs.append({
+            "agent_a": names[i], "agent_b": names[j],
+            "player1": names[p1_idx], "player2": names[p2_idx],
+            "result": row["result"], "score_for_a": score_i, "plies": row["plies"],
+        })
+    return out_results, out_logs
+
+
 def main() -> None:
     args = parse_args()
     log_path = _start_run_log(LOG_DIR)
@@ -340,7 +568,8 @@ def main() -> None:
     print()
 
     t0 = time.time()
-    out_path = args.out or "tournament_cpp_results.csv"
+    out_path = args.out or os.path.join("runs/tournaments", "adhoc", "results.csv")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     progress_path = _progress_path(out_path)
     signature = _run_signature(names, model_paths, agent_sims, args)
 
@@ -361,6 +590,38 @@ def main() -> None:
         print(f"Resuming from {progress_path}: "
               f"{len(completed_pairs)}/{n_pairs} pairs already complete "
               f"({len(game_results)} games); replaying the rest.\n")
+
+    if args.baseline:
+        baseline_pairs = _load_baseline(args.baseline, args)
+        if baseline_pairs is not None:
+            n_reused_pairs = 0
+            for i, j in pairs:
+                if (i, j) in completed_pairs:
+                    continue
+                key = frozenset({model_paths[i], model_paths[j]})
+                rows = baseline_pairs.get(key)
+                if rows is None or len(rows) != args.games:
+                    continue
+                reused = _reuse_baseline_pair(rows, i, j, names, model_paths)
+                if reused is None:
+                    continue
+                pair_results, pair_logs = reused
+                game_results.extend(pair_results)
+                for log_row in pair_logs:
+                    log_row["game"] = len(game_log) + 1
+                    game_log.append(log_row)
+                completed_pairs.add((i, j))
+                n_reused_pairs += 1
+            if n_reused_pairs:
+                print(f"Baseline {args.baseline}: reused {n_reused_pairs} pair(s) "
+                      f"({n_reused_pairs * args.games} games) — "
+                      f"{n_pairs - len(completed_pairs)} pair(s) left to simulate.\n")
+                _save_progress(progress_path, signature, completed_pairs,
+                               game_results, game_log, elapsed_offset + (time.time() - t0))
+            else:
+                print(f"Baseline {args.baseline}: no fully-matching pairs found "
+                      f"(new roster shares no complete {args.games}-game pair with it) "
+                      f"— simulating everything.\n")
 
     games_done_so_far = len(game_results)
 
@@ -452,6 +713,9 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(game_log)
     print(f"Matchup details saved to {matchup_path}")
+
+    # So this run's own output is itself usable as a future --baseline.
+    _write_run_meta(matchup_path, args)
 
     # Run finished cleanly — drop the resume snapshot so a later run with the
     # same --out starts fresh instead of thinking this one is still in progress.

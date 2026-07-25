@@ -29,16 +29,10 @@ from flask import Flask, jsonify, request, send_from_directory
 # Change these two lines when switching to a different board variant.
 DEFAULT_BOARDSIZE    = 9
 DEFAULT_WALLS        = 10
-MODEL_DIR            = "models_9x9_heads" if DEFAULT_BOARDSIZE == 9 else "models_7x7"
-import re
+MODEL_DIR            = "runs/models_9x9_heads" if DEFAULT_BOARDSIZE == 9 else "runs/models_7x7"
 from game import State, PawnAction, WallAction
 from mcts import MCTSAgent
 from dual_network import make_nn_evaluator
-from rl_models import (
-    QLearningAgent, SarsaAgent, ExpectedSarsaAgent,
-    DoubleQLearningAgent, DoubleSarsaAgent, DoubleExpectedSarsaAgent,
-    SimpleRLAgentWrapper,
-)
 from benchmark_agents import RandomAgent, GreedyDistanceAgent, MinimaxAgent
 
 CPU_DEVICE = torch.device("cpu")
@@ -100,18 +94,18 @@ _AGENT_REGISTRY: dict[str, dict] = {
     "supervised": {
         "name": "Supervised",
         "description": "Network trained purely by supervised learning on self-play data",
-        "available": lambda: Path("models_7x7", "supervised.pt").exists(),
+        "available": lambda: Path("runs/models_7x7", "supervised.pt").exists(),
         "factory": lambda n: MCTSAgent(
-            evaluator=make_nn_evaluator(str(Path("models_7x7", "supervised.pt")), device=CPU_DEVICE),
+            evaluator=make_nn_evaluator(str(Path("runs/models_7x7", "supervised.pt")), device=CPU_DEVICE),
             num_simulations=n,
         ),
     },
     "supervised_extended": {
         "name": "Supervised Extended",
         "description": "Supervised model trained on the extended dataset (best overall in tournament)",
-        "available": lambda: Path("models_7x7", "supervised_extended.pt").exists(),
+        "available": lambda: Path("runs/models_7x7", "supervised_extended.pt").exists(),
         "factory": lambda n: MCTSAgent(
-            evaluator=make_nn_evaluator(str(Path("models_7x7", "supervised_extended.pt")), device=CPU_DEVICE),
+            evaluator=make_nn_evaluator(str(Path("runs/models_7x7", "supervised_extended.pt")), device=CPU_DEVICE),
             num_simulations=n,
         ),
     },
@@ -140,79 +134,6 @@ _AGENT_REGISTRY: dict[str, dict] = {
         "factory": lambda _n: RandomAgent(),
     },
 }
-
-# ── Simple RL agent registry ───────────────────────────────────────────────────
-_RL_AGENT_CLASSES: dict[str, type] = {
-    "QLearningAgent":           QLearningAgent,
-    "SarsaAgent":               SarsaAgent,
-    "ExpectedSarsaAgent":       ExpectedSarsaAgent,
-    "DoubleQLearningAgent":     DoubleQLearningAgent,
-    "DoubleSarsaAgent":         DoubleSarsaAgent,
-    "DoubleExpectedSarsaAgent": DoubleExpectedSarsaAgent,
-}
-_RL_AGENT_DISPLAY_NAMES: dict[str, str] = {
-    "QLearningAgent":           "Q-Learning",
-    "SarsaAgent":               "SARSA",
-    "ExpectedSarsaAgent":       "Expected SARSA",
-    "DoubleQLearningAgent":     "Double Q-Learning",
-    "DoubleSarsaAgent":         "Double SARSA",
-    "DoubleExpectedSarsaAgent": "Double Expected SARSA",
-}
-_RL_DIR_PATTERN = re.compile(r"models_(\d+)x\d+_with_(\d+)_walls")
-
-def _register_rl_models() -> None:
-    """Scan for .pkl RL model files and register them in _AGENT_REGISTRY."""
-    search_roots = [Path("."), Path("simple_rl_models")]
-    for root in search_roots:
-        if not root.exists():
-            continue
-        for model_dir in sorted(root.iterdir()):
-            if not model_dir.is_dir():
-                continue
-            m = _RL_DIR_PATTERN.search(model_dir.name)
-            if m is None:
-                continue
-            boardsize = int(m.group(1))
-            walls     = int(m.group(2))
-            best_dir  = model_dir / "best"
-            if not best_dir.is_dir():
-                continue
-            for pkl_file in sorted(best_dir.glob("*.pkl")):
-                # Strip optional "_compressed" suffix to get the class name
-                class_name = pkl_file.stem
-                if class_name.endswith("_compressed"):
-                    class_name = class_name[: -len("_compressed")]
-                if class_name not in _RL_AGENT_CLASSES:
-                    continue
-                agent_cls = _RL_AGENT_CLASSES[class_name]
-                display   = _RL_AGENT_DISPLAY_NAMES.get(class_name, class_name)
-                suffix    = (
-                    ""
-                    if boardsize == DEFAULT_BOARDSIZE and walls == DEFAULT_WALLS
-                    else f" ({boardsize}\u00d7{boardsize}, {walls}W)"
-                )
-                agent_id  = f"rl_{class_name}_{boardsize}_{walls}"
-                if agent_id in _AGENT_REGISTRY:
-                    continue  # already registered (prefer earlier path)
-
-                def _make_factory(cls=agent_cls, path=pkl_file, bs=boardsize):
-                    def factory(_num_sims):
-                        inst = cls(boardsize=bs)
-                        inst.load(path)
-                        return SimpleRLAgentWrapper(inst)
-                    return factory
-
-                _AGENT_REGISTRY[agent_id] = {
-                    "name":        display + suffix,
-                    "description": f"Tabular RL agent ({boardsize}\u00d7{boardsize}, {walls} walls per player)",
-                    "available":   (
-                        lambda p=pkl_file, bs=boardsize, ws=walls:
-                        p.exists() and bs == DEFAULT_BOARDSIZE and ws == DEFAULT_WALLS
-                    ),
-                    "factory":     _make_factory(),
-                }
-
-_register_rl_models()
 
 
 def _default_agent_id() -> str:

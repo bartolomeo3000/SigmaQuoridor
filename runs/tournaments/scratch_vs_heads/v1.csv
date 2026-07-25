@@ -1,0 +1,6 @@
+rank,model,elo,wins,draws,losses,games,score_pct
+1,runs\models_9x9_heads\best.pt,2230.37,1853,56,91,2000,94.05
+2,runs\models_9x9_scratch\best.pt,1979.60,1499,18,483,2000,75.40
+3,runs\models_9x9_scratch\checkpoints\cycle_0061.pt,1698.93,1064,38,898,2000,54.15
+4,runs\models_9x9_scratch\checkpoints\cycle_0031.pt,1163.99,494,53,1453,2000,26.02
+5,runs\models_9x9_scratch\checkpoints\cycle_0002.pt,427.10,0,15,1985,2000,0.38

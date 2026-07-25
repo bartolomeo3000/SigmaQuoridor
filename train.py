@@ -81,9 +81,9 @@ FPU_REDUCTION     = 0.1    # First Play Urgency: unvisited child Q estimate = pa
 # <= TEMP_PRUNE_VISITS visits are never sampled (argmax always eligible).
 # Must be kept in sync with cpp/selfplay.hpp / cpp/bindings.cpp /
 # selfplay_cpp.py defaults.
-TEMP_EARLY        = 0.8
+TEMP_EARLY        = 0.9
 TEMP_FINAL        = 0.15
-TEMP_HALFLIFE     = 6.0
+TEMP_HALFLIFE     = 7.0
 TEMP_PRUNE_VISITS = 4
 FAST_PLAY_PROB      = 0.0  # fraction of moves that use fast MCTS; remainder use full search
 MCTS_SIMS_FAST      = 128   # simulations for fast plies (2 NN batches); not saved unless surprising
@@ -106,14 +106,12 @@ BATCH_SIZE                 = 1024   # was 256; GPU has headroom, and BatchNorm/v
                                     # docs/cpp_selfplay_notes.md for the LR sweep this was
                                     # paired with -- LR was scaled ~sqrt(4x) alongside this)
 TRAIN_POSITIONS_PER_CYCLE  = 1_024_000  # gradient updates = this // BATCH_SIZE per cycle
-BUFFER_RECENCY_DECAY       = 0.92     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
+BUFFER_RECENCY_DECAY       = 0.99     # per-cycle weight decay; 1.0 = uniform, lower = more recency. BUFFER_RECENCY_DECAY^CYCLE_AGE = relative weight of positions from a cycle CYCLE_AGE cycles ago when sampling training batches. 0.9^5 = 0.59, 0.9^10 = 0.35, 0.9^20 = 0.12, 0.9^40 = 0.01
 MIN_BUFFER_SIZE            = BATCH_SIZE
 
 # Optimizer
 LEARNING_RATE     = 3e-4  # was 1e-4 at batch 256; sqrt-scaled for the 4x batch increase
                           # (Adam heuristic -- see chat history). Not yet empirically swept;
-                          # a quick supervised_train.py LR sweep on data_9x9 is a sensible
-                          # next step before trusting this in the live RL loop.
 WEIGHT_DECAY      = 1e-4
 VALUE_LOSS_WEIGHT = 1.0         # multiply value MSE loss (KataGo uses ~1.5)
 LR_MILESTONES  = [800, 1600]    # cycle numbers at which to multiply LR by LR_DECAY
@@ -131,7 +129,7 @@ EVAL_SIMS  = 800   # MCTS simulations for the challenger during evaluation
 
 # Holdout validation (fixed set sampled once from a previous run's data)
 ENABLE_HOLDOUT_EVAL = False   # holdout loss is slow (HOLDOUT_SIZE positions/cycle); off by default
-HOLDOUT_DIR    = "data_9x9_fix"   # source directory for holdout positions
+HOLDOUT_DIR    = "runs/data_9x9_scratch"   # source directory for holdout positions
 HOLDOUT_CYCLES = 10            # how many most-recent cycles to draw from
 HOLDOUT_SIZE   = 4096*100         # positions to evaluate per cycle (fixed sample)
 
@@ -145,23 +143,23 @@ EVAL_OPPONENTS: list[tuple[str, int, dict]] = [
     ("greedy",          2, {"type": "greedy"}),
     # Disabled: models_7x7/best.pt is now the same file MODEL_DIR trains and
     # overwrites every cycle, so these would compare the model against itself.
-    # ("old-best   1s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":   1}),
-    # ("old-best  50s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims":  50}),
-    # ("old-best 100s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 100}),
-    # ("old-best 200s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 200}),
-    # ("old-best 400s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 400}),
-    # ("old-best 800s",   2, {"type": "mcts", "path": "models_7x7/best.pt", "sims": 800}),
+    # ("old-best   1s",   2, {"type": "mcts", "path": "runs/models_7x7/best.pt", "sims":   1}),
+    # ("old-best  50s",   2, {"type": "mcts", "path": "runs/models_7x7/best.pt", "sims":  50}),
+    # ("old-best 100s",   2, {"type": "mcts", "path": "runs/models_7x7/best.pt", "sims": 100}),
+    # ("old-best 200s",   2, {"type": "mcts", "path": "runs/models_7x7/best.pt", "sims": 200}),
+    # ("old-best 400s",   2, {"type": "mcts", "path": "runs/models_7x7/best.pt", "sims": 400}),
+    # ("old-best 800s",   2, {"type": "mcts", "path": "runs/models_7x7/best.pt", "sims": 800}),
     ("minimax d2",       2, {"type": "minimax", "depth": 2}),
     ("minimax d3",       2, {"type": "minimax", "depth": 3}),
     # ("minimax d4",       2, {"type": "minimax", "depth": 4}),
 ]
 
 # Paths
-MODEL_DIR      = "models_9x9_heads"                         # model checkpoints and best.pt weights
+MODEL_DIR      = "runs/models_9x9_scratch"                       # model checkpoints and best.pt weights
 MODEL_PATH     = os.path.join(MODEL_DIR, "best.pt")         # inference weights only
-LOG_DIR        = "logs"                                     # per-run console transcripts
+LOG_DIR        = "runs/logs"                                     # per-run console transcripts
 CHECKPOINT_DIR = os.path.join(MODEL_DIR, "checkpoints")     # full training state
-DATA_DIR       = "data_9x9_fix"                              # persisted self-play cycles
+DATA_DIR       = "runs/data_9x9_scratch"                          # persisted self-play cycles
 
 # Run
 NUM_CYCLES        = 100
@@ -787,6 +785,7 @@ def run_training_phase(
     weights:    np.ndarray | None = None,
     log_every:  int = 200,
     use_bf16:   bool = False,
+    loss_window: int = 100,
 ) -> dict[str, float]:
     """
     Run ``steps`` gradient-update steps on mini-batches sampled from the
@@ -812,6 +811,14 @@ def run_training_phase(
     value_acc_sum   = 0.0
     value_acc_count = 0
 
+    # Trailing windows for the progress line — a rolling mean over the last
+    # `loss_window` steps tracks the *current* loss instead of lagging behind
+    # it the way a cumulative-from-step-1 average does. The full-phase means
+    # returned below still use the running sums.
+    total_win  = deque(maxlen=loss_window)
+    policy_win = deque(maxlen=loss_window)
+    value_win  = deque(maxlen=loss_window)
+
     for step in range(1, steps + 1):
         if weights is not None:
             idx = np.random.choice(N, size=batch_size, replace=True, p=weights)
@@ -826,9 +833,14 @@ def run_training_phase(
         loss.backward()
         optimizer.step()
 
-        total_sum  += loss.item()
-        policy_sum += lp.item()
-        value_sum  += lv.item()
+        loss_val, lp_val, lv_val = loss.item(), lp.item(), lv.item()
+        total_sum  += loss_val
+        policy_sum += lp_val
+        value_sum  += lv_val
+
+        total_win.append(loss_val)
+        policy_win.append(lp_val)
+        value_win.append(lv_val)
 
         # Value accuracy: sign(predicted) == sign(target) for non-draw positions
         non_draw = target_z != 0
@@ -840,9 +852,9 @@ def run_training_phase(
         if log_every > 0 and step % log_every == 0:
             print(
                 f"  step {step:>5}/{steps}  "
-                f"loss={total_sum/step:.4f}  "
-                f"policy={policy_sum/step:.4f}  "
-                f"value={value_sum/step:.4f}"
+                f"loss={sum(total_win)/len(total_win):.4f}  "
+                f"policy={sum(policy_win)/len(policy_win):.4f}  "
+                f"value={sum(value_win)/len(value_win):.4f}"
             )
 
     return {
@@ -990,6 +1002,12 @@ def parse_args() -> argparse.Namespace:
                    help="parallel self-play worker processes (default: cpu count)")
     p.add_argument("--train-only", action="store_true",
                    help="skip self-play; train only on the existing buffer")
+    p.add_argument("--selfplay-time-s", type=float, default=None, metavar="SECONDS",
+                   help="wall-clock seconds the self-play phase took for this cycle, "
+                        "recorded into training_stats.csv. Passed by cpp_train_loop.py "
+                        "(which runs self-play as a separate subprocess) so cycle_time_s "
+                        "reflects self-play + training, not training alone. Ignored when "
+                        "self-play runs in-process (full loop measures it directly).")
     p.add_argument("--smoke-test", action="store_true",
                    help="dry-run: exercise the full pipeline but write no files "
                         "(forces --resume; ignores --cycles, runs exactly 1)")
@@ -1008,6 +1026,7 @@ def parse_args() -> argparse.Namespace:
 _STATS_COLUMNS = [
     # Self-play results
     "cycle",
+    "cycle_time_s", "selfplay_time_s", "train_time_s", "cumulative_time_s",
     "p1_wins", "p2_wins", "draws",
     "mean_game_length", "min_game_length", "max_game_length",
     "mean_walls_placed",
@@ -1016,6 +1035,7 @@ _STATS_COLUMNS = [
     "value_accuracy",
     "loss_total", "loss_policy", "loss_value",
     "holdout_loss_total", "holdout_loss_policy", "holdout_loss_value",
+    "train_steps", "cumulative_train_steps",
     # Hyperparameter snapshot (useful when constants are tweaked mid-training)
     "lr",
     "boardsize", "walls_per_player",
@@ -1049,6 +1069,24 @@ def _append_eval_csv(path: str, rows: list[dict]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerows(rows)
+
+
+def _prior_cumulative_totals(path: str) -> tuple[float, int]:
+    """Sum ``cycle_time_s``/``train_steps`` across every row already in the
+    stats CSV, so cumulative totals stay correct even though cpp_train_loop.py
+    invokes train.py as a fresh subprocess once per cycle (no in-memory
+    accumulator would survive that) and across --resume runs."""
+    if not os.path.exists(path):
+        return 0.0, 0
+    total_time = 0.0
+    total_steps = 0
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("cycle_time_s"):
+                total_time += float(row["cycle_time_s"])
+            if row.get("train_steps"):
+                total_steps += int(row["train_steps"])
+    return total_time, total_steps
 
 
 def _append_stats_csv(path: str, row: dict) -> None:
@@ -1469,8 +1507,10 @@ def main() -> None:
         t_cycle        = time.perf_counter()
         lr_now         = optimizer.param_groups[0]["lr"]
         sp_stats:       dict | None = None
+        sp_time:        float | None = None
         losses:         dict | None = None
         holdout_losses: dict | None = None
+        train_steps:    int | None = None
         print(f"{'='*66}")
         print(f"Cycle {cycle + 1}    LR={lr_now:.2e}")
         print(f"{'='*66}")
@@ -1573,14 +1613,34 @@ def main() -> None:
             else:
                 print(f"Saved  {MODEL_PATH}")
 
-        cycle_time = time.perf_counter() - t_cycle
+        proc_time = time.perf_counter() - t_cycle
+
+        # Split the cycle into self-play + training time. In the full in-process
+        # loop, proc_time already includes self-play (sp_time), so training is the
+        # remainder. Under --train-only, self-play ran in a separate subprocess
+        # (cpp_train_loop.py) and its wall time arrives via --selfplay-time-s;
+        # proc_time is training-only, so the two are added. cycle_time_s is always
+        # the true total so cumulative_time_s (and _prior_cumulative_totals) stay
+        # correct regardless of which path produced the row.
+        if sp_time is not None:                    # self-play ran in this process
+            selfplay_time = sp_time
+            train_time    = proc_time - sp_time
+        else:                                      # --train-only (self-play elsewhere)
+            selfplay_time = args.selfplay_time_s   # may be None if not supplied
+            train_time    = proc_time
+        cycle_time = train_time + (selfplay_time or 0.0)
 
         # ── 5. Stats CSV ─────────────────────────────────────────────────────
         if not args.smoke_test:
             stats_path = os.path.join(MODEL_DIR, "training_stats.csv")
+            prior_time, prior_steps = _prior_cumulative_totals(stats_path)
             _append_stats_csv(stats_path, {
                 # Self-play results
                 "cycle":               cycle + 1,
+                "cycle_time_s":        f"{cycle_time:.1f}",
+                "selfplay_time_s":     f"{selfplay_time:.1f}" if selfplay_time is not None else "",
+                "train_time_s":        f"{train_time:.1f}",
+                "cumulative_time_s":   f"{prior_time + cycle_time:.1f}",
                 "p1_wins":             sp_stats["p1_wins"]            if sp_stats else "",
                 "p2_wins":             sp_stats["p2_wins"]            if sp_stats else "",
                 "draws":               sp_stats["draws"]              if sp_stats else "",
@@ -1597,6 +1657,8 @@ def main() -> None:
                 "holdout_loss_total":  f"{holdout_losses['total']:.6f}"  if holdout_losses else "",
                 "holdout_loss_policy": f"{holdout_losses['policy']:.6f}" if holdout_losses else "",
                 "holdout_loss_value":  f"{holdout_losses['value']:.6f}"  if holdout_losses else "",
+                "train_steps":            train_steps if train_steps else "",
+                "cumulative_train_steps": (prior_steps + train_steps) if train_steps else "",
                 # Hyperparameter snapshot
                 "lr":                        f"{lr_now:.2e}",
                 "boardsize":                 BOARDSIZE,

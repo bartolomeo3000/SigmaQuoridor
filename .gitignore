@@ -212,12 +212,22 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Project runtime artifacts
-logs/
+# Project runtime artifacts. Everything generated (model lineages, self-play
+# data, tournament results, logs) lives under runs/.
+#
+# Committed deliberately: model checkpoints (runs/models_*/), and tournament
+# results (runs/tournaments/) -- the matchups CSVs are what --baseline reuse
+# matches against, so they're worth keeping.
+#
+# NOT committed: console logs, and self-play .npz data, which is regenerable
+# and enormous (6.6 GB for the 9x9 scratch lineage alone). NOTE: data_7x7/ and
+# data_9x9_fix/ were committed before this rule existed and stay tracked --
+# .gitignore only affects untracked files.
+runs/logs/
+runs/data_9x9_scratch/
 
 # Vs Code settings
 .vscode/
 
-# Bookkeeping archive: post-cycle-56 heads checkpoints + self-play data moved
-# aside after cycle 56 was chosen as best (see BREAKTHROUGH/HEAD_REDESIGN notes).
-/_archive/
+# (The former /_archive/ of post-cycle-56 heads checkpoints + self-play data was
+# deleted on 2026-07-25 during the checkpoint cleanup; nothing writes there now.)

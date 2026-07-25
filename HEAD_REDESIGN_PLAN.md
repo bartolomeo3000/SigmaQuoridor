@@ -20,7 +20,7 @@ new net).
   initialized. On the real net: **161/174 tensors copied**, 13 fresh (the two
   changed heads + the new marker). New param count: 2,909,869 vs 2,878,575
   legacy (**+1.09%** — "heads should add little", confirmed).
-- `init_head_redesign.py` — one-off script wrapping the above: warm-starts a
+- `tools/init_head_redesign.py` — one-off script wrapping the above: warm-starts a
   **new lineage** `models_9x9_heads/` (`best.pt` + `checkpoints/cycle_0000.pt`,
   the latter built with a fresh Adam/`MultiStepLR` so `train.py --resume`
   picks it up at cycle 0). `models_9x9`/`data_9x9_fix` is untouched.
@@ -29,10 +29,10 @@ new net).
   `--gpool-every` already had — resuming requires matching flags, exactly the
   pre-existing pattern, no new sharp edge). `_eval_worker`'s challenger
   reconstruction and the pure-Python self-play worker path were updated too.
-- `test_head_redesign.py` — regression suite: old-checkpoint load, fresh-net
+- `tests/test_head_redesign.py` — regression suite: old-checkpoint load, fresh-net
   round-trip (incl. `boardsize_marker`), 4-way forward-shape check across head
   variants, and the warm-start correctness checks above. All pass, alongside
-  unchanged `test_cpp_parity.py` and `test_canon_consistency.py`.
+  unchanged `tests/test_cpp_parity.py` and `tests/test_canon_consistency.py`.
 
 ## A/B result — 2026-07-19/20: new heads win decisively; now the default lineage
 
@@ -84,7 +84,7 @@ gracefully to the console while the UTF-8 log file keeps the exact text.
   pure fp32 noise. Fully compatible with both the Python app and the JS/ONNX
   browser frontend.
 - `models_9x9`/its checkpoints are left untouched as the frozen legacy
-  reference (also what `test_head_redesign.py`/`test_canon_consistency.py`
+  reference (also what `tests/test_head_redesign.py`/`tests/test_canon_consistency.py`
   test against, deliberately).
 
 Not touched: `docs/index.html`'s hardcoded legacy-cycle picker entries (e.g.
@@ -116,7 +116,7 @@ earlier "scale up / enable gpool" suggestions are done. What remains are the two
 
 Both heads output in the current player's canonical frame — unchanged by this
 plan. The canonicalization boundary (record/serve vflip) is independent of head
-internals; see the `policy-canonical-frame` memory / `test_canon_consistency.py`.
+internals; see the `policy-canonical-frame` memory / `tests/test_canon_consistency.py`.
 
 ---
 
@@ -266,13 +266,13 @@ against it so you can measure the head change in isolation.
 
 ## 5. Testing checklist (before trusting a run)
 
-- **Old-checkpoint load:** `load_model("models_9x9/best.pt")` still works and
+- **Old-checkpoint load:** `load_model("runs/models_9x9/best.pt")` still works and
   `_infer_arch` returns legacy heads + correct boardsize (9). `app.py` serves it
   unchanged.
 - **New net round-trip:** create a pooled/local net, `save_model` → `load_model`,
   assert identical outputs on a fixed input (arch inferred correctly).
 - **Shape/parity:** forward on a `(B,8,9,9)` batch returns `(B,136)` + `(B,1)`;
-  `test_cpp_parity.py` unaffected (no C++ change); `test_canon_consistency.py`
+  `tests/test_cpp_parity.py` unaffected (no C++ change); `tests/test_canon_consistency.py`
   still passes (head internals don't touch the canonical frame boundary).
 - **Param count sanity:** log new vs old param counts; heads should add little.
 - **Partial warm-start helper** (if used): assert trunk/wall keys copied,

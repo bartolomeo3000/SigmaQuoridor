@@ -1,3 +1,0 @@
-rank,model,elo,wins,draws,losses,games,score_pct
-1,models_9x9\best.pt,1590.52,1508,12,528,2048,73.93
-2,models_9x9\checkpoints\cycle_0186.pt,1409.48,528,12,1508,2048,26.07

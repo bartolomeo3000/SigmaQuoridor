@@ -12,7 +12,6 @@ importScripts('ort.min.js');   // local copy of onnxruntime-web
 // ── ONNX Runtime Web ────────────────────────────────────────────────────────
 let ortSession = null;
 let _activeTaskGen = -1;  // incremented on each new task; used to cancel stale loops
-const _simpleRlCache = new Map();
 const DEFAULT_MODEL_PATH = './models/supervised_extended.onnx';
 const START_MODEL_PATH = (() => {
   try { return new URL(self.location.href).searchParams.get('model') || DEFAULT_MODEL_PATH; }
@@ -215,88 +214,6 @@ function selectMinimaxAction(state, depth) {
   return bestActions.length ? bestActions[Math.floor(Math.random() * bestActions.length)] : null;
 }
 
-// ── Simple RL ────────────────────────────────────────────────────────────────
-async function loadSimpleRlModel(path) {
-  if (_simpleRlCache.has(path)) return _simpleRlCache.get(path);
-  const res = await fetch(path, { credentials: 'same-origin' });
-  if (!res.ok) throw new Error(`Failed to load Simple RL model: ${path}`);
-  const raw = await res.json();
-  const table = new Map();
-  for (const [stateKey, indices, values] of raw.table || []) {
-    const q = new Map();
-    for (let i = 0; i < indices.length; i++) q.set(Number(indices[i]), Number(values[i]));
-    table.set(String(stateKey), q);
-  }
-  const model = { ...raw, table };
-  _simpleRlCache.set(path, model);
-  return model;
-}
-
-function simpleRlStateKey(state) {
-  const N = state.boardsize;
-  const cb = BigInt(Math.floor(Math.log2(N - 1)) + 1);
-  const nH = BigInt(state.hwalls.length);
-  const nV = BigInt(state.vwalls.length);
-
-  let hbits = 0n;
-  for (let i = 0; i < state.hwalls.length; i++) if (state.hwalls[i]) hbits |= 1n << BigInt(i);
-  let vbits = 0n;
-  for (let i = 0; i < state.vwalls.length; i++) if (state.vwalls[i]) vbits |= 1n << BigInt(i);
-
-  const [p1x, p1y] = state.player1pos;
-  const [p2x, p2y] = state.player2pos;
-  const base = BigInt(p1x)
-    | (BigInt(p1y) << cb)
-    | (BigInt(p2x) << (2n * cb))
-    | (BigInt(p2y) << (3n * cb))
-    | (hbits << (4n * cb))
-    | (vbits << (4n * cb + nH))
-    | (BigInt(state.walls_p1) << (4n * cb + nH + nV))
-    | (BigInt(state.walls_p2) << (4n * cb + nH + nV + cb))
-    | (BigInt(state.getCurrentPlayer()) << (4n * cb + nH + nV + 2n * cb));
-
-  let mhbits = 0n;
-  let mvbits = 0n;
-  for (let y = 0; y < N; y++) {
-    const row = y * N;
-    for (let x = 0; x < N; x++) {
-      const mirroredIndex = row + (N - 1 - x);
-      if (state.hwalls[row + x]) mhbits |= 1n << BigInt(mirroredIndex);
-      if (state.vwalls[row + x]) mvbits |= 1n << BigInt(mirroredIndex);
-    }
-  }
-  const mirrored = BigInt(N - 1 - p1x)
-    | (BigInt(p1y) << cb)
-    | (BigInt(N - 1 - p2x) << (2n * cb))
-    | (BigInt(p2y) << (3n * cb))
-    | (mhbits << (4n * cb))
-    | (mvbits << (4n * cb + nH))
-    | (BigInt(state.walls_p1) << (4n * cb + nH + nV))
-    | (BigInt(state.walls_p2) << (4n * cb + nH + nV + cb))
-    | (BigInt(state.getCurrentPlayer()) << (4n * cb + nH + nV + 2n * cb));
-
-  return (base < mirrored ? base : mirrored).toString();
-}
-
-async function selectSimpleRlAction(state, modelPath) {
-  const model = await loadSimpleRlModel(modelPath);
-  const legal = state.getLegalActions();
-  if (legal.length === 0) return null;
-  const q = model.table.get(simpleRlStateKey(state));
-  const optimistic = Number(model.optimistic_init || 0);
-  let bestAction = legal[0];
-  let bestValue = -Infinity;
-  for (const action of legal) {
-    const idx = actionToIndex(action, state.boardsize);
-    const value = q && q.has(idx) ? q.get(idx) : optimistic;
-    if (value > bestValue) {
-      bestValue = value;
-      bestAction = action;
-    }
-  }
-  return bestAction;
-}
-
 // ── MCTS ──────────────────────────────────────────────────────────────────────
 class MCTSNode {
   constructor(state, parent = null, action = null, prior = 1.0, parentState = null) {
@@ -467,7 +384,6 @@ onmessage = async function (e) {
     const s      = stateFromMsg(d);
     let action;
     if (d.agentId === 'minimax') action = selectMinimaxAction(s, Math.max(2, Math.min(8, d.minimaxDepth || 3)));
-    else if (d.agentId === 'simple_rl') action = await selectSimpleRlAction(s, d.simpleRlPath);
     else action = await selectAction(s, numSims, evalFn, gen);
     if (gen !== _activeTaskGen) return;  // cancelled
     if (action === null) return;  // cancelled

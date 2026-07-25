@@ -3,7 +3,7 @@
 Loads the latest N cycles of npz data, creates a fresh model with the same
 architecture, and trains it with cross-entropy (policy) + MSE (value) losses
 for a given number of epochs.  The trained model is saved and can be compared
-with the procedurally-trained model via _matchup.py.
+with the procedurally-trained model via tools/_matchup.py.
 
 Usage
 -----
@@ -33,13 +33,13 @@ BOARDSIZE    = 9
 FILTERS      = 128
 NUM_RESIDUAL = 10
 WALLS        = 5          # used only for action_space_size
-DATA_DIR     = "data_7x7"
+DATA_DIR     = "runs/data_7x7"
 NUM_CYCLES   = 80
 EPOCHS       = 12
 BATCH_SIZE   = 512
 LR           = 3e-4
 WEIGHT_DECAY = 1e-4
-OUT_PATH     = "models_7x7/supervised_extended.pt"
+OUT_PATH     = "runs/models_7x7/supervised_extended.pt"
 
 
 def load_data(data_dir: str, num_cycles: int,
@@ -152,7 +152,7 @@ def train(args: argparse.Namespace) -> None:
     save_model(model, str(out))
     print(f"Saved → {out}")
     print(f"\nRun matchup with:")
-    print(f"  python _matchup.py --model-a models_7x7/best.pt --model-b {out} "
+    print(f"  python tools/_matchup.py --model-a models_7x7/best.pt --model-b {out} "
           f"--name-a procedural --name-b supervised")
 
 

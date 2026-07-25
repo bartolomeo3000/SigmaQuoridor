@@ -305,10 +305,6 @@
       <input id="minimax-depth-slider" type="range" min="2" max="8" step="1" value="3"
              style="width:100%;accent-color:#3fb950;cursor:pointer;margin-bottom:8px">
     </div>
-    <div id="simple-rl-row" style="display:none">
-      <span style="font-size:11px;color:var(--muted)">RL Agent</span>
-      <select id="simple-rl-select" class="agent-select" style="margin-top:4px;margin-bottom:8px"></select>
-    </div>
     <div id="sims-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
       <span id="sims-display" style="font-size:12px;font-weight:600">100</span>
@@ -393,20 +389,17 @@
 <script src="game.js"></script>
 <script>
 // ── Constants ────────────────────────────────────────────────────────────────
-// Board variants: swapping variant changes boardsize/walls, the available
+// Board variants: swapping variant changes boardsize/walls and the available
 // model list (7x7 and 9x9 nets are architecturally incompatible — different
-// action-space size — so they're never interchangeable), and whether the
-// (7x7-only, tabular) Simple RL agent is offered.
+// action-space size — so they're never interchangeable).
 const BOARD_VARIANTS = {
   '7x7': {
     boardsize: 7, walls: 5,
     defaultModel: './models/supervised_extended.onnx',
-    simpleRlAvailable: true,
   },
   '9x9': {
     boardsize: 9, walls: 10,
     defaultModel: './models_9x9/best.onnx',
-    simpleRlAvailable: false,
   },
 };
 let currentBoardVariant = '9x9';
@@ -455,7 +448,6 @@ let legalWallSet   = new Set();
 let gameMode       = 'hva';
 let numSimulations = 100;
 let minimaxDepth   = 3;
-let simpleRlId     = 'QLearningAgent';
 let selectedAgentId = 'alphazero';
 let _agentList      = [];
 let agentThinking   = false;
@@ -816,7 +808,6 @@ function darken(hex, amt) {
 
 function currentAgentDetail() {
   if (selectedAgentId === 'minimax') return `${currentAgentName()} · depth ${minimaxDepth}`;
-  if (selectedAgentId === 'simple_rl') return `${currentAgentName()} · ${currentSimpleRlAgent().name}`;
   return `${currentAgentName()} · ${numSimulations} simulations`;
 }
 
@@ -997,8 +988,6 @@ function triggerAgentMove() {
     type:     'think',
     numSims:  numSimulations,
     minimaxDepth,
-    simpleRlId,
-    simpleRlPath: currentSimpleRlAgent().path,
     agentId:  selectedAgentId,
     gen,
   });
@@ -1009,17 +998,8 @@ const AGENT_DEFS = [
   { id: 'alphazero',    name: 'SigmaQuoridor',  description: 'MCTS guided by a trained neural network' },
   { id: 'mcts_rollout', name: 'MCTS',           description: 'Pure MCTS with random rollouts' },
   { id: 'minimax',      name: 'Minimax',        description: 'Alpha-beta search with adjustable depth' },
-  { id: 'simple_rl',    name: 'Simple RL',      description: 'Tabular reinforcement-learning agents trained offline' },
 ];
 
-const SIMPLE_RL_LIST = [
-  { id: 'QLearningAgent',           name: 'Q-Learning',              path: './models/simple_rl/QLearningAgent.json' },
-  { id: 'SarsaAgent',               name: 'SARSA',                   path: './models/simple_rl/SarsaAgent.json' },
-  { id: 'ExpectedSarsaAgent',       name: 'Expected SARSA',          path: './models/simple_rl/ExpectedSarsaAgent.json' },
-  { id: 'DoubleQLearningAgent',     name: 'Double Q-Learning',       path: './models/simple_rl/DoubleQLearningAgent.json' },
-  { id: 'DoubleSarsaAgent',         name: 'Double SARSA',            path: './models/simple_rl/DoubleSarsaAgent.json' },
-  { id: 'DoubleExpectedSarsaAgent', name: 'Double Expected SARSA',   path: './models/simple_rl/DoubleExpectedSarsaAgent.json' },
-];
 
 const MODEL_LIST_7X7 = [
   { label: 'supervised_extended  (latest)', path: './models/supervised_extended.onnx' },
@@ -1045,18 +1025,13 @@ const MODEL_LIST_7X7 = [
 // fix) belong here — the JS now un-flips P2's policy (see vertPolicyPermutation
 // in game.js). The pre-fix legacy checkpoints (≤ cycle 339) used the opposite
 // (real-frame) P2 convention, so serving them through the fixed JS would give a
-// vertically-scrambled P2 policy. They've been removed from this picker. The
-// entries below are all from the models_9x9_heads lineage; "best" is cycle 56,
-// the strongest in the diagnostic tournament.
+// vertically-scrambled P2 policy. They've been removed from this picker.
+// "best" is the from-scratch lineage's cycle 321, which beat the old heads
+// cycle 56 head-to-head (61.1% over 500 games) and took rank 1 in the v7
+// tournament; heads cycle 56 is kept alongside it as the previous best.
 const MODEL_LIST_9X9 = [
-  { label: 'best  (heads cycle 56)', path: './models_9x9/best.onnx' },
-  { label: 'Heads cycle 164', path: './models_9x9/checkpoints/cycle_0164.onnx' },
-  { label: 'Heads cycle 161', path: './models_9x9/checkpoints/cycle_0161.onnx' },
-  { label: 'Heads cycle 141', path: './models_9x9/checkpoints/cycle_0141.onnx' },
-  { label: 'Heads cycle 121', path: './models_9x9/checkpoints/cycle_0121.onnx' },
-  { label: 'Heads cycle 101', path: './models_9x9/checkpoints/cycle_0101.onnx' },
-  { label: 'Heads cycle 81',  path: './models_9x9/checkpoints/cycle_0081.onnx' },
-  { label: 'Heads cycle 61',  path: './models_9x9/checkpoints/cycle_0061.onnx' },
+  { label: 'best  (scratch cycle 321)',   path: './models_9x9/best.onnx' },
+  { label: 'previous best (heads cycle 56)', path: './models_9x9/checkpoints/cycle_0056.onnx' },
 ];
 
 function currentModelList() {
@@ -1071,7 +1046,7 @@ function _buildAgentSelect(selEl, currentId, setId, filter) {
     opt.value       = a.id;
     // 'alphazero' availability tracks async ONNX model loading (loading… vs
     // failed); every other unavailable agent is unavailable for a static
-    // reason (e.g. Simple RL has no 9x9 tabular tables) — always say so.
+    // reason — always say so.
     const suffix    = a.available ? ''
       : a.id !== 'alphazero' ? ' (unavailable)'
       : (_nnLoadFailed ? ' (unavailable)' : ' (loading…)');
@@ -1104,7 +1079,6 @@ function initAgentList() {
   _agentList = AGENT_DEFS.map(a => ({
     ...a,
     available: a.id === 'alphazero' ? _nnAvailable
-             : a.id === 'simple_rl' ? currentVariant().simpleRlAvailable
              : true,
   }));
   _buildAgentSelect(
@@ -1117,7 +1091,6 @@ function initAgentList() {
   _updateAnalysisAgentDesc();
   buildModelSelect();
   buildAnalysisModelSelect();
-  buildSimpleRlSelect();
   updateModelPickerVisibility();
 }
 
@@ -1161,33 +1134,15 @@ function buildAnalysisModelSelect() {
   }
 }
 
-function buildSimpleRlSelect() {
-  const sel = document.getElementById('simple-rl-select');
-  sel.innerHTML = '';
-  for (const agent of SIMPLE_RL_LIST) {
-    const opt = document.createElement('option');
-    opt.value = agent.id;
-    opt.textContent = agent.name;
-    if (agent.id === simpleRlId) opt.selected = true;
-    sel.appendChild(opt);
-  }
-}
-
-function currentSimpleRlAgent() {
-  return SIMPLE_RL_LIST.find(agent => agent.id === simpleRlId) || SIMPLE_RL_LIST[0];
-}
-
 function updateModelPickerVisibility() {
   document.getElementById('model-picker-row').style.display =
     selectedAgentId === 'alphazero' ? '' : 'none';
   document.getElementById('minimax-depth-row').style.display =
     selectedAgentId === 'minimax' ? '' : 'none';
-  document.getElementById('simple-rl-row').style.display =
-    selectedAgentId === 'simple_rl' ? '' : 'none';
   document.getElementById('sims-row').style.display =
-    (selectedAgentId === 'minimax' || selectedAgentId === 'simple_rl') ? 'none' : 'flex';
+    selectedAgentId === 'minimax' ? 'none' : 'flex';
   document.getElementById('sims-slider').style.display =
-    (selectedAgentId === 'minimax' || selectedAgentId === 'simple_rl') ? 'none' : '';
+    selectedAgentId === 'minimax' ? 'none' : '';
 }
 
 function currentAgentName() {
@@ -1445,8 +1400,7 @@ function runMctsAnalysis() {
 // size), so switching variant always: starts a fresh game at the new
 // boardsize/walls, swaps both play + analysis ONNX sessions to the new
 // variant's default model (via the existing generic 'load_model' worker
-// message — no need to recreate the workers themselves), and disables the
-// (7x7-only, tabular) Simple RL agent when on 9x9.
+// message — no need to recreate the workers themselves).
 function switchBoardVariant(id) {
   if (id === currentBoardVariant || !BOARD_VARIANTS[id]) return;
   currentBoardVariant = id;
@@ -1477,8 +1431,6 @@ function switchBoardVariant(id) {
   _analysisModelLoading = true;
   _agentManuallyChanged = false;
   _analysisAgentManuallyChanged = false;
-  if (selectedAgentId === 'simple_rl' && !v.simpleRlAvailable) selectedAgentId = 'alphazero';
-  if (analysisAgentId === 'simple_rl' && !v.simpleRlAvailable) analysisAgentId = 'alphazero';
 
   getWorker().postMessage({ type: 'load_model', path: activeModelPath });
   getAnalysisWorker().postMessage({ type: 'load_model', path: analysisModelPath });
@@ -1547,13 +1499,6 @@ document.getElementById('sims-slider').addEventListener('input', e => {
 document.getElementById('minimax-depth-slider').addEventListener('input', e => {
   minimaxDepth = Number(e.target.value);
   document.getElementById('minimax-depth-display').textContent = minimaxDepth;
-});
-document.getElementById('simple-rl-select').addEventListener('change', e => {
-  simpleRlId = e.target.value;
-  if (gameMode === 'hvh') return;
-  _searchGen++; agentThinking = false;
-  updateSidebar();
-  if (state && !state.is_finished && isAgentTurn()) setTimeout(triggerAgentMove, 80);
 });
 document.getElementById('agent-select').addEventListener('change', e => {
   _agentManuallyChanged = true;

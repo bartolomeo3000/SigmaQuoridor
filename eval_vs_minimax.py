@@ -20,7 +20,7 @@ from dual_network import DEVICE, NNEvaluator, load_model
 BOARDSIZE        = 7
 WALLS_PER_PLAYER = 5
 N_GAMES          = 1        # games per side (total = 2 × N_GAMES)
-DEFAULT_MODEL    = "models_7x7/best.pt"
+DEFAULT_MODEL    = "runs/models_7x7/best.pt"
 DEFAULT_SIMS     = 800
 DEFAULT_DEPTH    = 3
 # ---------------------------------------------------------------------------

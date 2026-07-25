@@ -1,0 +1,6 @@
+rank,model,elo,wins,draws,losses,games,score_pct
+1,runs\models_7x7\checkpoints\cycle_0162.pt,1586.92,2642,43,1411,4096,65.03
+2,runs\models_7x7\checkpoints\cycle_0152.pt,1536.53,2289,46,1761,4096,56.45
+3,runs\models_7x7\checkpoints\cycle_0071.pt,1465.34,1786,30,2280,4096,43.97
+4,runs\models_7x7\checkpoints\cycle_0121.pt,1457.19,1725,36,2335,4096,42.55
+5,runs\models_7x7\checkpoints\cycle_0141.pt,1454.02,1701,39,2356,4096,42.00

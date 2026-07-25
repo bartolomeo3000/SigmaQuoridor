@@ -24,7 +24,7 @@ import quoridor_cpp
 from dual_network import DualNetwork, load_model
 from game import flip_policy_lr
 
-LOG_DIR = "logs"   # per-run console transcripts (same convention as train.py)
+LOG_DIR = "runs/logs"   # per-run console transcripts (same convention as train.py)
 
 
 def pick_device() -> torch.device:

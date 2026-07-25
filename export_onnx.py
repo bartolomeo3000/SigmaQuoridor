@@ -18,14 +18,18 @@ Path("docs/models").mkdir(parents=True, exist_ok=True)
 Path("docs/models_9x9").mkdir(parents=True, exist_ok=True)
 
 EXPORTS = [
-    ("models_7x7/best.pt",              "docs/models/best.onnx"),
-    ("models_7x7/supervised.pt",         "docs/models/supervised.onnx"),
-    ("models_7x7/supervised_extended.pt","docs/models/supervised_extended.onnx"),
-    ("models_9x9_heads/best.pt",          "docs/models_9x9/best.onnx"),
+    ("runs/models_7x7/best.pt",              "docs/models/best.onnx"),
+    ("runs/models_7x7/supervised.pt",         "docs/models/supervised.onnx"),
+    ("runs/models_7x7/supervised_extended.pt","docs/models/supervised_extended.onnx"),
+    # The served 9x9 net is the from-scratch lineage, which overtook the old
+    # heads best (cycle 56) in the v7 tournament -- 61.1% head-to-head, and
+    # rank 1 overall. Heads cycle 56 stays exported as checkpoints/cycle_0056
+    # below so the picker can still offer the previous best for comparison.
+    ("runs/models_9x9_scratch/best.pt",        "docs/models_9x9/best.onnx"),
 ]
 
 # Dynamically add checkpoint exports.
-_ck_src = Path("models_7x7/checkpoints")
+_ck_src = Path("runs/models_7x7/checkpoints")
 _ck_dst = Path("docs/models/checkpoints")
 if _ck_src.exists():
     _ck_dst.mkdir(parents=True, exist_ok=True)
@@ -38,7 +42,7 @@ if _ck_src.exists():
 # sized. Bump CKPT_STEP down (or add specific cycles to _ck_extra) if you
 # want a denser checkpoint history in the browser picker.
 CKPT_STEP = 20
-_ck9_src = Path("models_9x9_heads/checkpoints")
+_ck9_src = Path("runs/models_9x9_heads/checkpoints")
 _ck9_dst = Path("docs/models_9x9/checkpoints")
 if _ck9_src.exists():
     _ck9_dst.mkdir(parents=True, exist_ok=True)

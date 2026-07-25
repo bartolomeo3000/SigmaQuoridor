@@ -20,7 +20,7 @@ else — `selfplay_cpp.py` silently falls back to cpu/mps otherwise.
 ## 1. Correctness (must pass before any benchmarking)
 
 ```bash
-python test_cpp_parity.py --games 50
+python tests/test_cpp_parity.py --games 50
 ```
 Expect: all three boardsizes (5x5, 7x7, 9x9) pass, no assertion errors.
 This only depends on the engine, not the GPU — should be identical to
@@ -49,7 +49,7 @@ machine less responsive for the same throughput?
 for t in 4 6 7 8; do
   echo "=== threads=$t ==="
   python selfplay_cpp.py --games 128 --sims 64 --threads $t \
-      --parallel 128 --max-batch 256 --model models_7x7_v2/best.pt
+      --parallel 128 --max-batch 256 --model runs/models_7x7_v2/best.pt
 done
 ```
 Record: games/hour, evals/s, mean batch, and subjectively whether the
@@ -147,7 +147,7 @@ for cap in 500000 2000000 5000000 10000000 20000000 -1; do
   python selfplay_cpp.py --games 2000 --sims 800 --threads <winner> \
       --parallel <winner> --leaf-batch 1 --max-batch <winner> \
       --boardsize 7 --walls 5 --seed 42 \
-      --model models_7x7_v2/best.pt --tt-max-depth -1 \
+      --model runs/models_7x7_v2/best.pt --tt-max-depth -1 \
       --tt-max-entries $cap
 done
 ```
@@ -177,7 +177,7 @@ not use it as a CUDA throughput baseline.
 ```bash
 python selfplay_cpp.py --games 256 --sims 800 --threads <winner> \
     --parallel <winner> --max-batch <winner> \
-    --model models_7x7_v2/best.pt --bf16
+    --model runs/models_7x7_v2/best.pt --bf16
 python selfplay_cpp.py ... --compile
 python selfplay_cpp.py ... --bf16 --compile
 ```
@@ -206,17 +206,17 @@ exploration, not a single sweep:
   for lb in 1 4 8; do
     python selfplay_cpp.py --games 512 --sims 800 --leaf-batch $lb \
         --threads <winner> --parallel <winner> --max-batch <winner> \
-        --model models_7x7_v2/best.pt --out-dir /tmp/lb$lb
+        --model runs/models_7x7_v2/best.pt --out-dir /tmp/lb$lb
   done
   ```
 - **Quality side** (the part that actually matters for the tradeoff):
   don't rely solely on soft proxies like policy entropy/value-distribution
   stats from the self-play npz files. Instead, evaluate quality directly:
   - Run each `leaf_batch` variant's resulting/trained checkpoint against
-    a fixed holdout set (e.g. `_holdout_check.py` if applicable) and
+    a fixed holdout set (e.g. `tools/_holdout_check.py` if applicable) and
     compare win-rate/loss metrics.
   - Or run direct matchups between models trained from leaf_batch=1 data
-    vs leaf_batch=N data (see `tournament.py`/`_matchup.py`) to get a
+    vs leaf_batch=N data (see `tournament.py`/`tools/_matchup.py`) to get a
     real win-rate delta, not just a proxy.
   - If leaf_batch>1 measurably hurts quality, test whether raising
     `--sims` for the batched variant (to compensate) closes the gap
@@ -236,8 +236,8 @@ directly against the old `train.py` self-play phase at the same
 ```bash
 time python selfplay_cpp.py --games 200 --sims 800 \
     --threads <winner> --parallel <winner> --max-batch <winner> \
-    --bf16 [--compile] --model models_7x7_v2/best.pt \
-    --out-dir data_7x7_v2
+    --bf16 [--compile] --model runs/models_7x7_v2/best.pt \
+    --out-dir runs/data_7x7_v2
 ```
 Record final games/hour and compare to the ~400 games/hour baseline
 measured previously on this same machine with the old multiprocessing
@@ -250,7 +250,7 @@ Confirm the produced npz loads and trains identically to existing data:
 ```bash
 python -c "
 import numpy as np
-d = np.load('data_7x7_v2/cycle_XXXX.npz')
+d = np.load('runs/data_7x7_v2/cycle_XXXX.npz')
 print(d['states'].shape, d['policies'].shape, d['values'].shape)
 print(d['states'].dtype, d['policies'].dtype, d['values'].dtype)
 "
