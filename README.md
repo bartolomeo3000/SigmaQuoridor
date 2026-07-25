@@ -24,26 +24,53 @@ rather than a brick wall — it plays sensibly and a decent human can beat it �
 **25.07.2026** it was the strongest publicly available Quoridor AI I could find, which makes it
 the bar worth clearing.
 
-The 9×9 network **beats it as both first and second player using no search at all** — a single
+My 9×9 network **beats it as both first and second player using no search at all** — a single
 forward pass, playing the arg-max of the policy head, zero MCTS simulations. With search on top
 it is stronger still.
-
-The current network is the product of a from-scratch run on one desktop GPU:
-
-| | |
-|---|---|
-| Board | 9×9, 10 walls per player |
-| Training | 321 cycles · 2048 self-play games each · 800 MCTS sims/move |
-| Compute | **35.7 h total** on one RTX 5070 Ti (27.2 h self-play + 8.4 h network training) |
-| Gradient steps | 319,000 |
-| Network | 128 filters × 10 residual blocks, KataGo-style global pooling every 3rd block |
-
-That is the headline point for anyone considering this approach: **a strong engine for a
-non-trivial game, from random weights, in a day and a half on consumer hardware.**
 
 Past that point, measuring progress gets awkward — neither I nor the reference bot can beat it
 any more, so there's no external yardstick left. Improvement is tracked instead by round-robin
 Elo tournaments between checkpoints (`runs/tournaments/`).
+
+## Speed
+
+The current network is the product of a single from-scratch run on my personal desktop — not a
+cluster, not a rented A100, and not a dedicated machine either: the CPU was under normal load
+from everything else I was doing at the time.
+
+| | |
+|---|---|
+| Machine | Ryzen 7 7800X3D (8 cores) · RTX 5070 Ti 16 GB · 32 GB RAM · Windows 11 |
+| Board | 9×9, 10 walls per player |
+| Training | 321 cycles · 2048 self-play games each · 800 MCTS sims/move |
+| Compute | **35.7 h total** — 27.2 h self-play + 8.4 h network training |
+| Gradient steps | 319,000 |
+| Network | 128 filters × 10 residual blocks, KataGo-style global pooling every 3rd block |
+
+**Speed on consumer hardware is a design goal here, not an afterthought** — and it's the main
+thing this repo does differently from most AlphaZero reimplementations, which tend to be written
+for clarity or for clusters and are content to generate a few hundred games an hour on one GPU.
+
+Measured on the machine above, at full 9×9 / 800-simulations-per-move settings:
+
+| | |
+|---|---|
+| Self-play | **~29,700 games/hour** (2048 games in ~249 s) |
+| Training | ~105 s per cycle (1000 gradient steps at batch 1024) |
+| **Full cycle** | **~6 minutes**, self-play *and* training |
+
+That is what makes a 321-cycle run finish over a weekend instead of a month. Where it comes from:
+
+- **The whole search is in C++** ([`cpp/`](cpp/)) — a second, from-scratch rules engine with
+  bitboards and Zobrist hashing, running leaf-parallel MCTS on worker threads that hold no GIL.
+- **Thousands of games run concurrently** so the GPU always receives large inference batches
+  instead of one position at a time — the single biggest factor.
+- **A transposition table shared across all those games**, so the openings every game passes
+  through are evaluated once, not thousands of times.
+- **Exact alpha-beta endgame solving**, bf16 inference, and a pre-allocated flat replay buffer.
+
+The trade-off is honest: the rules now exist twice, in Python and C++, and have to be kept
+byte-identical. That's what [`tests/test_cpp_parity.py`](tests/test_cpp_parity.py) is for.
 
 ---
 
