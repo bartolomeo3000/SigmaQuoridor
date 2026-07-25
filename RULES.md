@@ -41,6 +41,53 @@ the engine offers here.
 
 ---
 
+## Walls
+
+<img src="docs/screenshots/rules/wall_types.png" width="440" alt="A horizontal and a vertical wall on the board">
+
+A wall is **two squares long** and sits in the groove *between* squares, not on them:
+
+- a **horizontal** wall blocks vertical movement across the boundary it lies on, for both columns it spans
+- a **vertical** wall blocks horizontal movement across the boundary it lies on, for both rows it spans
+
+Walls block **all** pawn movement across them — yours as much as your opponent's — and they never
+move once placed. Each wall you place is deducted from your supply; when you run out, you can only
+move your pawn.
+
+Internally a wall is identified by its **anchor**, the bottom-left of the two grooves it occupies,
+on an `(N-1)×(N-1)` grid — which is why a 9×9 board has `8×8×2 = 128` distinct wall placements and
+`8 + 128 = 136` actions in total.
+
+### When a wall placement is illegal
+
+<img src="docs/screenshots/rules/wall_illegal.png" width="440" alt="A wall preview shown in red because it would seal the opposing pawn in">
+
+Four conditions, all enforced by `is_wall_legal`:
+
+1. **Off the grid** — the anchor must leave room for both halves of the wall.
+2. **Overlap** — it may not share a groove with an existing wall of the same orientation. A
+   horizontal wall at anchor `(x,y)` therefore rules out horizontal anchors `(x-1,y)`, `(x,y)` and
+   `(x+1,y)`.
+3. **Crossing** — a horizontal and a vertical wall may not cross at the same centre point, so a
+   horizontal wall at `(x,y)` also rules out a *vertical* wall at `(x,y)`.
+4. **No sealing anyone in** — after the placement, **both** players must still have at least one
+   route to their goal row. The engine checks this with a breadth-first search each time.
+
+Rule 4 is the one that makes Quoridor a game rather than a race: walls can lengthen a route as
+much as you like, but can never close it off entirely.
+
+That's what the diagram shows. Two walls already box the red pawn in on the left and below, and
+the **dark red preview** marks the wall that would close the last side. It overlaps nothing and
+sits on a perfectly ordinary groove — it's rejected purely because it would leave red with no
+route to the bottom row at all, so the app refuses it before you can place it. (A legal placement
+previews in orange instead.)
+
+Note the rule protects **both** players: a wall that seals *your opponent* off is just as illegal
+as one that traps you. Boxing the opponent in is not a winning strategy — the most you can ever do
+is make their journey longer.
+
+---
+
 ## Jumping
 
 When the two pawns are **face to face** — orthogonally adjacent with no wall between them — the
@@ -96,53 +143,6 @@ whole position.
 
 So a pawn standing face to face with its opponent has, in order: the straight jump if the square
 behind is free; otherwise whichever diagonals are individually reachable; otherwise no jump at all.
-
----
-
-## Walls
-
-<img src="docs/screenshots/rules/wall_types.png" width="440" alt="A horizontal and a vertical wall on the board">
-
-A wall is **two squares long** and sits in the groove *between* squares, not on them:
-
-- a **horizontal** wall blocks vertical movement across the boundary it lies on, for both columns it spans
-- a **vertical** wall blocks horizontal movement across the boundary it lies on, for both rows it spans
-
-Walls block **all** pawn movement across them — yours as much as your opponent's — and they never
-move once placed. Each wall you place is deducted from your supply; when you run out, you can only
-move your pawn.
-
-Internally a wall is identified by its **anchor**, the bottom-left of the two grooves it occupies,
-on an `(N-1)×(N-1)` grid — which is why a 9×9 board has `8×8×2 = 128` distinct wall placements and
-`8 + 128 = 136` actions in total.
-
-### When a wall placement is illegal
-
-<img src="docs/screenshots/rules/wall_illegal.png" width="440" alt="A wall preview shown in red because it would seal the opposing pawn in">
-
-Four conditions, all enforced by `is_wall_legal`:
-
-1. **Off the grid** — the anchor must leave room for both halves of the wall.
-2. **Overlap** — it may not share a groove with an existing wall of the same orientation. A
-   horizontal wall at anchor `(x,y)` therefore rules out horizontal anchors `(x-1,y)`, `(x,y)` and
-   `(x+1,y)`.
-3. **Crossing** — a horizontal and a vertical wall may not cross at the same centre point, so a
-   horizontal wall at `(x,y)` also rules out a *vertical* wall at `(x,y)`.
-4. **No sealing anyone in** — after the placement, **both** players must still have at least one
-   route to their goal row. The engine checks this with a breadth-first search each time.
-
-Rule 4 is the one that makes Quoridor a game rather than a race: walls can lengthen a route as
-much as you like, but can never close it off entirely.
-
-That's what the diagram shows. Two walls already box the red pawn in on the left and below, and
-the **dark red preview** marks the wall that would close the last side. It overlaps nothing and
-sits on a perfectly ordinary groove — it's rejected purely because it would leave red with no
-route to the bottom row at all, so the app refuses it before you can place it. (A legal placement
-previews in orange instead.)
-
-Note the rule protects **both** players: a wall that seals *your opponent* off is just as illegal
-as one that traps you. Boxing the opponent in is not a winning strategy — the most you can ever do
-is make their journey longer.
 
 ---
 
