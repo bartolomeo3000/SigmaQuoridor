@@ -1,8 +1,30 @@
+# Install with:  pip install -r requirements.txt
+#
+# IMPORTANT: install torch FIRST, from the index matching your CUDA version --
+# a plain `pip install torch` can land a CPU-only wheel, which still runs but
+# makes self-play impractically slow. See the README's Setup section, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch
+
+# Build dependencies for the C++ extension (python setup_cpp.py build_ext --inplace).
+# setuptools is NOT installed automatically into a fresh Python 3.12+ venv, so it
+# must be listed explicitly or the build fails with ModuleNotFoundError.
+pybind11
+setuptools
+
+# Core numerics.
+numpy
+
+# Flask dev server for playing in a browser locally (app.py).
 flask
 waitress
-numpy
-torch
-tqdm
+
+# ONNX export for the static web frontend (docs/). torch.onnx does the export
+# itself; the `onnx` package is used by tools/_diag_onnx.py to re-check an
+# exported graph against the PyTorch model it came from.
+onnx
+
+# Used by data_analysis.ipynb.
 pandas
-joblib
-pybind11
+tqdm
+matplotlib
