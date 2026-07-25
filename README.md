@@ -100,6 +100,8 @@ randomly, it just asks the network "who's winning here?" and propagates that ans
 Run a few hundred simulations and the visit counts across the root's children are a **better**
 move distribution than the raw policy — search sharpens intuition.
 
+![One MCTS simulation: select, expand and evaluate, back up](docs/screenshots/mcts.svg)
+
 **The loop.** That improvement is the entire training signal:
 
 ```
