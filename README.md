@@ -559,7 +559,7 @@ script there needs `import _bootstrap` before importing project modules.
   the wrong buffer instead of erroring.
 - **Falling loss ≠ a stronger engine.** Losses are in-sample on a moving buffer. Only head-to-head
   results are evidence.
-- **Self-play degenerating to a thin set of unique variants.** You don't want your self-play to duplicate the same game trajectories within one cycle too excesively, as that would lead to the net overfitting and overall playing strength regression. Monitor that from time to time, and if needed, loosen the temperature schedule.
+- **Self-play degenerating to a thin set of unique variants.** You don't want your self-play to duplicate the same game trajectories within one cycle too excessively, as that would lead to the net overfitting and overall playing strength regression. Monitor that from time to time, and if needed, loosen the temperature schedule.
 - **The endgame solver can stall self-play.** `--solver-max-total-walls 2` occasionally hit 4-second
   timeouts that starved the search threads; `1` solves ~30k endgames per cycle with zero timeouts.
   Watch the `solver: N calls, M timeouts` line — if `M` climbs, lower the cap or the time limit.
