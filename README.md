@@ -227,15 +227,21 @@ everything runs in your browser (ONNX Runtime Web); no data leaves your machine.
 | Control | What it does |
 |---|---|
 | **Board** | `7×7 (5 walls)` or `9×9 (10 walls)` — 9×9 is the default and the stronger net |
-| **Agent** | `SigmaQuoridor` (net + MCTS), `MCTS` (pure random rollouts), `Minimax` (depth 2–8) |
-| **Checkpoint** | `best (scratch cycle 321)` or `previous best (heads cycle 56)` — play the current net against its predecessor |
-| **Simulations** | 1 → 5000, default **100**. This is the AI's thinking budget: 1 = raw network intuition with no search, 5000 = slow and very strong |
-| **Mode** | `H vs AI` (default), `AI vs H` (AI moves first), `H vs H` |
-| `↩ Undo Move` | Takes back your move *and* the AI's reply |
+| **Mode** | `H vs AI` (default), `AI vs H` (AI moves first), `H vs H`, `AI vs AI` |
+| **Agent** | Per side: `SigmaQuoridor` (net + MCTS), `MCTS` (pure random rollouts), `Minimax` (depth 2–8) |
+| **Checkpoint** | Per side: `best (scratch cycle 321)` or `previous best (heads cycle 56)` — in `AI vs AI` this really does play the current net against its predecessor, each side in its own worker with its own ONNX session |
+| **Simulations** | Per side, 1 → 5000, default **100**. This is the AI's thinking budget: 1 = raw network intuition with no search, 5000 = slow and very strong |
+| **Playback delay** | *Minimum* time a move stays on screen while a game plays out on its own — `AI vs AI`, and replaying the timeline. 0 → 5 s, default 0.75 s; a search that already took longer isn't held back further. It never applies to the AI's reply to *your* move, which always appears as soon as the search finishes |
+| ◀ ▶ **/ scrubber** | Step one ply back or forward, or drag to any position in the game. The ← / → keys do the same |
+| `▶ Play` / `⏸ Pause` | Start or stop auto-advance (Space). Paused at the live position, ▶ plays exactly one move; parked back in the game, ▶ replays it forward from there |
 | `⇅ Flip Board` | Flip orientation |
 
-**Two things that make it more than a game UI:**
+Moving from a rewound position branches the game — everything after it is discarded — so the
+timeline doubles as undo *and* redo.
 
+- **🤖 AI vs AI** — give each side its own agent, budget and checkpoint, then watch. `best` against
+  `previous best` is the same head-to-head the Elo tournament runs, one game at a time, at a speed
+  you can actually follow. Scrub back through any game afterwards, ply by ply.
 - **📊 Analysis** — win-probability bars (the network's value head, plus the MCTS root value once
   a search finishes) and a ranked move list showing the **network's prior (green) against MCTS's
   visit counts (red)** side by side. That contrast is precisely the "search improves on intuition"
@@ -525,9 +531,9 @@ SigmaQuoridor/
 │  export_onnx.py       Exports .pt checkpoints to ONNX for the web frontend
 │  static/              Frontend served by app.py
 │  docs/                GitHub Pages site — a third engine implementation, in JavaScript
-│    ├─ index.html        UI, board renderer, agent/model pickers, analysis panel
+│    ├─ index.html        UI, board renderer, per-side agent pickers, timeline, analysis panel
 │    ├─ game.js           JS port of game.py
-│    └─ mcts_worker.js    Web Worker: MCTS + onnxruntime-web inference
+│    └─ mcts_worker.js    Web Worker: MCTS + onnxruntime-web inference (one per checkpoint)
 │
 ├─ Tests & tooling ─────────────────────────────────────────────────────────
 │  tests/               Verification CLIs, run directly (no pytest)

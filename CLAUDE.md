@@ -152,8 +152,36 @@ PyTorch model. `export_onnx.py` converts trained `.pt` checkpoints to ONNX for `
 `docs/` is a separate static GitHub Pages frontend —
 `docs/game.js` and `docs/mcts_worker.js` are a from-scratch **JavaScript** reimplementation of the
 engine/MCTS (a third engine implementation, running the exported ONNX model client-side), not a
-consumer of `game.py`/`quoridor_cpp`. Its board-variant default (7x7) does not necessarily match
-`app.py`'s default (9x9) — check both if changing default board size anywhere.
+consumer of `game.py`/`quoridor_cpp`. Both its board-variant default and `app.py`'s are 9x9, but
+they're set independently (`currentBoardVariant` in `docs/index.html` vs `app.py`'s args) — check
+both if changing default board size anywhere.
+
+The whole frontend app is inline in `docs/index.html` (there is no separate app.js/css). Things
+worth knowing before editing it:
+
+- **Four modes** (`gameMode`: `hvh`/`hva`/`avh`/`ava`) with **per-side agent configuration** —
+  `sideConfig[1|2]` carries each side's agent, sims, minimax depth and checkpoint, and
+  `MODE_AI_SIDES` maps the mode to which sides the AI plays. Anything that used to be a single
+  global (agent id, sim count, model path) is now per-side.
+- **One play worker per distinct checkpoint** (`_playWorkers`, keyed by model path) so `ava` can
+  run two different nets without re-initialising an ONNX session every ply. Each worker derives
+  its own `modelFullCanonical` from its `?model=` query, which is what keeps the P2 policy frame
+  correct per checkpoint — don't collapse this into one worker holding several sessions without
+  making that flag per-session. `releaseUnusedPlayWorkers()` reaps the rest.
+- **Game history is a timeline, not an undo stack**: `timeline[]` (State snapshots) + `moves[]`
+  (`{action,label}`) + `viewIdx`, with `timeline.length === moves.length + 1`. Moving from a
+  rewound position truncates the future. `seekTo()` is user navigation (sets `paused` by the
+  tip rule); `gotoIndex()` is the mechanical jump used by the replay ticker and must not touch
+  `paused`.
+- `applyState()` is still the single choke point for "state changed → redraw → decide what's
+  next", and `maybeAdvance()` is the only thing that starts a search or a replay step. One timer
+  (`_advanceTimer`), always cleared first.
+- `moveDelayMs` (the "Playback delay" slider) is a *minimum* display time, not a fixed sleep, and
+  it only paces the two cases where you're spectating: `ava` live moves (applied in the worker's
+  `move` reply, gated on `gameMode === 'ava'`) and timeline replay (in `maybeAdvance`). It must
+  never delay the AI's reply in `hva`/`avh` — the human is waiting on that move.
+- The analysis panel deliberately keeps its **own** worker and `analysisModelPath`, separate from
+  the per-side play workers.
 
 ## Working notes
 

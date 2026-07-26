@@ -146,6 +146,9 @@
 
     /* ── mode selector ── */
     .mode-btn-group { display: flex; gap: 6px; }
+    /* Four modes don't fit one row in the 196px sidebar — lay them out 2x2.
+       The Board card still uses .mode-btn-group (only two buttons). */
+    .mode-btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     .mode-btn, .board-btn { flex: 1; padding: 7px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
     .mode-btn.active, .board-btn.active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
 
@@ -189,11 +192,51 @@
     #board-actions { display: flex; gap: 6px; flex-wrap: wrap; }
     #board-actions button {
       width: auto;
-      /* basis small enough that all five stay on one row at 7x7 (546px) and
+      /* basis small enough that all four stay on one row at 7x7 (546px) and
          9x9 (690px), but they wrap rather than crush if the board gets smaller */
       flex: 1 1 100px;
       padding: 9px 6px;
       font-size: 12px;
+      white-space: nowrap;
+    }
+
+    /* ── timeline (game-history scrubber) ──
+       Lives inside #board-stack so it is exactly the board's width — anything
+       in flow here that is WIDER than the board shoves the sidebar sideways
+       (see the note on #nn-panel below). */
+    #timeline-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+    #timeline-row button {
+      width: auto;
+      flex: 0 0 auto;
+      padding: 5px 9px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #timeline-row button:disabled { opacity: 0.35; cursor: default; }
+    #timeline-row button:disabled:hover { background: transparent; border-color: var(--border); }
+    #timeline-slider {
+      flex: 1 1 auto;
+      min-width: 0;              /* allow it to shrink inside the flex row */
+      accent-color: var(--muted);
+      cursor: pointer;
+    }
+    #timeline-slider:disabled { cursor: default; opacity: 0.4; }
+    #timeline-label {
+      flex: 0 0 auto;
+      min-width: 96px;
+      text-align: right;
+      font-family: 'Consolas', 'SF Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
 
@@ -334,36 +377,28 @@
 
   <div class="card">
     <div class="card-label">Mode</div>
-    <div class="mode-btn-group">
+    <div class="mode-btn-grid">
       <button class="mode-btn" data-mode="hvh">H vs H</button>
       <button class="mode-btn active" data-mode="hva">H vs AI</button>
       <button class="mode-btn" data-mode="avh">AI vs H</button>
+      <button class="mode-btn" data-mode="ava">AI vs AI</button>
+    </div>
+    <!-- Paces AI vs AI and history replay only — never the AI's reply to a
+         human move, which always shows as soon as the search finishes. -->
+    <div id="delay-row" style="margin-top:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:11px;color:var(--muted);flex:1">Playback delay</span>
+        <span id="delay-display" style="font-size:12px;font-weight:600">0.75s</span>
+      </div>
+      <input id="delay-slider" type="range" min="0" max="10" step="1" value="5"
+             style="width:100%;accent-color:#3fb950;cursor:pointer">
     </div>
   </div>
 
-  <div class="card" id="agent-card">
-    <div class="card-label">Agent</div>
-    <select id="agent-select" class="agent-select"></select>
-    <div id="agent-desc" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
-    <div id="model-picker-row" style="display:none">
-      <span style="font-size:11px;color:var(--muted)">Checkpoint</span>
-      <select id="model-select" class="agent-select" style="margin-top:4px;margin-bottom:8px"></select>
-    </div>
-    <div id="minimax-depth-row" style="display:none">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <span style="font-size:11px;color:var(--muted);flex:1">Depth</span>
-        <span id="minimax-depth-display" style="font-size:12px;font-weight:600">3</span>
-      </div>
-      <input id="minimax-depth-slider" type="range" min="2" max="8" step="1" value="3"
-             style="width:100%;accent-color:#3fb950;cursor:pointer;margin-bottom:8px">
-    </div>
-    <div id="sims-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-      <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
-      <span id="sims-display" style="font-size:12px;font-weight:600">100</span>
-    </div>
-    <input id="sims-slider" type="range" min="0" max="39" step="1" value="26"
-           style="width:100%;accent-color:#3fb950;cursor:pointer">
-  </div>
+  <!-- Both agent cards are generated from one template in JS (agentCardHTML)
+       so the two sides' controls can't drift apart. -->
+  <div class="card" id="agent-card-p1" style="display:none"></div>
+  <div class="card" id="agent-card-p2" style="display:none"></div>
 
 </div>
 
@@ -373,9 +408,16 @@
       <canvas id="board"></canvas>
     </div>
 
+    <div id="timeline-row">
+      <button id="btn-step-back" title="Previous ply (Left arrow)">&#x25C0;</button>
+      <button id="btn-step-fwd"  title="Next ply (Right arrow)">&#x25B6;</button>
+      <button id="btn-play"      title="Play / pause (Space)">&#x25B6; Play</button>
+      <input id="timeline-slider" type="range" min="0" max="0" step="1" value="0">
+      <span id="timeline-label">0 / 0</span>
+    </div>
+
     <div id="board-actions">
       <button id="btn-reset">&#x21BA; New Game</button>
-      <button id="btn-undo">&#x21A9; Undo Move</button>
       <button id="btn-flip">&#x21C5; Flip Board</button>
       <button id="btn-nn">&#x1F9E0; NN Channels</button>
       <button id="btn-analysis">&#x1F4CA; Analysis</button>
@@ -489,11 +531,20 @@ const CLR = {
 };
 
 // ── Game state ───────────────────────────────────────────────────────────────
-// `gameState` is the canonical State instance.
+// `gameState` is the canonical State instance for the position on screen.
 // `state` is a plain serialized object (same format as Flask /api/state) used
 //   by all rendering / interaction code — never modified except by applyState().
-let gameState    = null;
-const gameHistory = [];   // Stack of State instances for undo
+//
+// The game is kept as a TIMELINE rather than a pop-only undo stack, so history
+// navigation is symmetric (back/forward/scrub) and a rewound position can be
+// replayed forward again:
+//     timeline[i] is the position BEFORE moves[i]
+//  => timeline.length === moves.length + 1, and gameState === timeline[viewIdx]
+// State.next() is non-mutating, so every entry is an independent snapshot.
+let gameState = null;
+let timeline  = [];
+let moves     = [];   // { action, label } — moves[i] takes timeline[i] -> timeline[i+1]
+let viewIdx   = 0;
 
 let state          = null;
 let landing        = [];
@@ -504,37 +555,91 @@ let hoverCell      = null;
 let analysisHoverMove = null;
 let legalWallSet   = new Set();
 let gameMode       = 'hva';
-let numSimulations = 100;
-let minimaxDepth   = 3;
-let selectedAgentId = 'alphazero';
-let _agentList      = [];
 let agentThinking   = false;
 let _searchGen      = 0;
+let _thinkingSide   = 0;   // which player the search we're waiting on belongs to
+let _thinkStart     = 0;   // performance.now() when that search was posted
 let _thinkDone      = 0;   // simulations finished in the search we're waiting on
 let _thinkTotal     = 0;   // 0 = no countable progress (minimax), so no bar
 let _analysisDone   = 0;   // same, for the analysis panel's own MCTS run
 let _analysisTotal  = 0;
-let _nnAvailable    = false;
-let _agentManuallyChanged = false;
-let _nnLoadFailed   = false;
-let activeModelPath = './models_9x9/best.onnx';
-let _modelLoading   = false;
 let _analysisNnAvailable   = false;
 let _analysisNnLoadFailed  = false;
 let analysisModelPath      = './models_9x9/best.onnx';
 let _analysisModelLoading  = false;
 
+// ── Playback ─────────────────────────────────────────────────────────────────
+// `paused` gates every kind of auto-advance: agent searches at the live
+// position, and replay of already-recorded moves when parked behind it.
+// `moveDelayMs` paces the two cases where a game plays out on its own and you
+// are only watching: AI vs AI, and replaying recorded moves. There it is a
+// MINIMUM display time, so a fast search doesn't flash past (a slow one is
+// never delayed further). It deliberately does NOT apply to the AI's reply in
+// H vs AI / AI vs H — you're waiting on that move, so it shows immediately.
+let paused        = false;
+let moveDelayMs   = 750;
+let _stepOnce     = false;   // one-shot: advance a single move, then re-pause
+let _advanceTimer = null;
+
+// ── Per-side agent configuration ──────────────────────────────────────────────
+// Each side carries its own agent, search budget and checkpoint, which is what
+// makes AI vs AI worth watching (e.g. the current net against its predecessor).
+// `manual` records whether the user has picked this side's agent, so async ONNX
+// loading may only auto-select 'alphazero' for sides they haven't touched.
+const SIDES = [1, 2];
+function _defaultSideConfig() {
+  return {
+    agentId:      'alphazero',
+    numSims:      100,
+    minimaxDepth: 3,
+    modelPath:    currentVariant().defaultModel,
+    manual:       false,
+  };
+}
+const sideConfig = { 1: _defaultSideConfig(), 2: _defaultSideConfig() };
+
+const MODE_AI_SIDES = { hvh: [], hva: [2], avh: [1], ava: [1, 2] };
+function isAgentSide(p) { return MODE_AI_SIDES[gameMode].includes(p); }
+
 // ── Web Workers ──────────────────────────────────────────────────────────────
-let _worker         = null;
+// One play worker per distinct model path. Each worker owns exactly one ONNX
+// session, so two NN agents on different checkpoints can face each other
+// without a 'load_model' round trip (re-initialising ~12MB) on every ply. Each
+// worker also derives its own `modelFullCanonical` from its `?model=` query, so
+// the P2 policy frame stays correct per checkpoint. Both sides default to the
+// same path, so the common case is still a single worker.
+const _playWorkers = new Map();   // path -> { worker, ready, failed }
 let _analysisWorker = null;
 
-function getWorker() {
-  if (!_worker) {
-    _worker = new Worker(`mcts_worker.js?model=${encodeURIComponent(activeModelPath)}`);
-    _worker.onmessage = handlePlayWorkerMessage;
-    _worker.onerror   = e => console.error('[worker]', e);
+function getPlayWorker(path) {
+  let entry = _playWorkers.get(path);
+  if (!entry) {
+    const worker = new Worker(`mcts_worker.js?model=${encodeURIComponent(path)}`);
+    entry = { worker, ready: false, failed: false };
+    worker.onmessage = e => handlePlayWorkerMessage(e, path);
+    worker.onerror   = e => console.error('[worker]', path, e);
+    _playWorkers.set(path, entry);
   }
-  return _worker;
+  return entry;
+}
+
+function nnReady(path)   { const e = _playWorkers.get(path); return !!(e && e.ready); }
+function nnFailed(path)  { const e = _playWorkers.get(path); return !!(e && e.failed); }
+function nnLoading(path) { return !nnReady(path) && !nnFailed(path); }
+
+function ensurePlayWorkers() {
+  for (const side of SIDES) getPlayWorker(sideConfig[side].modelPath);
+}
+
+// A worker per checkpoint the user browses through would pile up fast (the 7x7
+// picker alone has 17), so drop any that neither side is configured for.
+function releaseUnusedPlayWorkers() {
+  const keep = new Set(SIDES.map(s => sideConfig[s].modelPath));
+  for (const [path, entry] of [..._playWorkers]) {
+    if (keep.has(path)) continue;
+    entry.worker.terminate();
+    _playWorkers.delete(path);
+  }
 }
 
 function getAnalysisWorker() {
@@ -563,22 +668,25 @@ function workerPayload(gs) {
   };
 }
 
-function handlePlayWorkerMessage(e) {
-  const d = e.data;
+function handlePlayWorkerMessage(e, path) {
+  const d     = e.data;
+  const entry = _playWorkers.get(path);
 
   if (d.type === 'model_loaded') {
-    _nnAvailable = true;
-    _nnLoadFailed = false;
-    _modelLoading = false;
-    if (!_agentManuallyChanged) selectedAgentId = 'alphazero';
+    if (entry) { entry.ready = true; entry.failed = false; }
+    // Only sides actually configured for this checkpoint — and whose agent the
+    // user hasn't picked themselves — snap to the net agent once it's ready.
+    for (const side of SIDES) {
+      if (sideConfig[side].modelPath === path && !sideConfig[side].manual)
+        sideConfig[side].agentId = 'alphazero';
+    }
     initAgentList();
     return;
   }
 
   if (d.type === 'model_failed') {
-    console.error('[main] ONNX model failed to load:', d.reason);
-    _nnLoadFailed = true;
-    _modelLoading = false;
+    console.error('[main] ONNX model failed to load:', path, d.reason);
+    if (entry) { entry.ready = false; entry.failed = true; }
     initAgentList();
     return;
   }
@@ -594,11 +702,28 @@ function handlePlayWorkerMessage(e) {
   }
 
   if (d.type === 'move') {
-    agentThinking = false;
-    _thinkDone = 0; _thinkTotal = 0;
+    // Gate on the generation BEFORE touching agentThinking: a stale reply must
+    // not clear the flag belonging to the search that superseded it.
     if (d.gen !== _searchGen) return;
-    if (!gameState || gameState.isFinished()) return;
-    postMove(d.action);
+    if (!gameState || gameState.isFinished()) { agentThinking = false; return; }
+    // In AI vs AI, hold the move back until it has been at least moveDelayMs
+    // since the search started, so a fast agent stays watchable; agentThinking
+    // stays true through the wait, keeping the board locked and the bar full.
+    // When a human is waiting on the AI's reply, any hold is just lag — play it
+    // as soon as it's ready, whatever the playback slider says.
+    const gen  = d.gen;
+    const wait = gameMode === 'ava'
+      ? Math.max(0, moveDelayMs - (performance.now() - _thinkStart))
+      : 0;
+    clearAdvance();
+    _advanceTimer = setTimeout(() => {
+      _advanceTimer = null;
+      if (gen !== _searchGen) return;
+      agentThinking = false;
+      _thinkDone = 0; _thinkTotal = 0;
+      if (!gameState || gameState.isFinished()) return;
+      postMove(d.action);
+    }, wait);
     return;
   }
 }
@@ -614,7 +739,7 @@ function handleAnalysisWorkerMessage(e) {
     initAgentList();
     if (document.getElementById('analysis-panel').classList.contains('open')) {
       refreshNnAnalysis();
-      if (_analysisMctsAuto && state && !state.is_finished && !isAgentTurn()) runMctsAnalysis();
+      if (_analysisMctsAuto && state && !state.is_finished && !agentThinking) runMctsAnalysis();
     }
     return;
   }
@@ -694,7 +819,10 @@ function pixelToCell(px, py) {
 }
 
 function computeLanding() {
-  if (!state || state.is_finished) return [];
+  // Destination highlights are a "you can click here" affordance, so don't draw
+  // them on a side the human doesn't control — otherwise an AI vs AI board sits
+  // permanently lit up with squares nobody can click.
+  if (!state || state.is_finished || isAgentTurn()) return [];
   const [cx, cy] = state.current_player === 1 ? state.player1pos : state.player2pos;
   const [ox, oy] = state.current_player === 1 ? state.player2pos : state.player1pos;
   return state.legal_pawn_moves.map(([dx, dy]) => {
@@ -886,11 +1014,18 @@ function darken(hex, amt) {
   return `rgb(${Math.max(0,(n>>16)-amt)},${Math.max(0,((n>>8)&0xff)-amt)},${Math.max(0,(n&0xff)-amt)})`;
 }
 
-function currentAgentDetail() {
-  if (selectedAgentId === 'minimax') return `${currentAgentName()} · depth ${minimaxDepth}`;
-  if (agentThinking && _thinkTotal > 0)
-    return `${currentAgentName()} · ${_thinkDone} / ${_thinkTotal} simulations`;
-  return `${currentAgentName()} · ${numSimulations} simulations`;
+function agentDetail(side) {
+  const cfg  = sideConfig[side];
+  const name = agentName(side);
+  if (cfg.agentId === 'minimax') return `${name} · depth ${cfg.minimaxDepth}`;
+  if (agentThinking && _thinkingSide === side && _thinkTotal > 0)
+    return `${name} · ${_thinkDone} / ${_thinkTotal} simulations`;
+  return `${name} · ${cfg.numSims} simulations`;
+}
+
+// The side whose search the status card is currently reporting on.
+function reportingSide() {
+  return _thinkingSide || (state ? state.current_player : 1);
 }
 
 // Bar + live count for the search we're waiting on. Kept separate from
@@ -902,7 +1037,7 @@ function renderThinkProgress() {
   track.style.display = show ? '' : 'none';
   if (!show) { fill.style.width = '0%'; return; }
   fill.style.width = `${Math.min(100, 100 * _thinkDone / _thinkTotal)}%`;
-  document.getElementById('status-sub').textContent = currentAgentDetail();
+  document.getElementById('status-sub').textContent = agentDetail(reportingSide());
 }
 
 // Same, for the analysis panel's MCTS run — this bar replaces what used to be
@@ -919,33 +1054,36 @@ function renderAnalysisProgress() {
 function updateSidebar() {
   document.getElementById('walls-p1').textContent = `${state.walls_p1} wall${state.walls_p1 !== 1 ? 's' : ''}`;
   document.getElementById('walls-p2').textContent = `${state.walls_p2} wall${state.walls_p2 !== 1 ? 's' : ''}`;
-  document.getElementById('name-p1').textContent = gameMode === 'avh' ? currentAgentName() : 'Player 1';
-  document.getElementById('name-p2').textContent = gameMode === 'hva' ? currentAgentName() : 'Player 2';
+  document.getElementById('name-p1').textContent = isAgentSide(1) ? agentName(1) : 'Player 1';
+  document.getElementById('name-p2').textContent = isAgentSide(2) ? agentName(2) : 'Player 2';
   const pe1 = document.getElementById('pe-p1');
   const pe2 = document.getElementById('pe-p2');
   pe1.className = 'player-entry' + (state.current_player === 1 && !state.is_finished ? ' active-p1' : '');
   pe2.className = 'player-entry' + (state.current_player === 2 && !state.is_finished ? ' active-p2' : '');
   document.getElementById('status-ply').textContent = `Ply ${state.depth}`;
   renderThinkProgress();
+  renderTimeline();
   const txt = document.getElementById('status-text');
   const sub = document.getElementById('status-sub');
   if (agentThinking) {
     txt.className = 'thinking';
     txt.textContent = 'Thinking…';
-    sub.textContent = currentAgentDetail();
+    sub.textContent = agentDetail(reportingSide());
   } else if (state.is_finished) {
     txt.className = '';
     txt.textContent = state.winner ? `Player ${state.winner} wins! 🎉` : 'Draw';
     sub.textContent = state.winner ? 'Game over' : 'Max depth reached';
   } else {
     txt.className = '';
-    const name = (gameMode === 'avh' && state.current_player === 1) ? currentAgentName()
-               : (gameMode === 'hva' && state.current_player === 2) ? currentAgentName()
-               : `Player ${state.current_player}`;
+    const name = isAgentSide(state.current_player) ? agentName(state.current_player)
+                                                   : `Player ${state.current_player}`;
     txt.textContent = `${name}'s turn`;
     sub.textContent = state.current_player === 1 ? 'Green — reach the top row'
                                                   : 'Red — reach the bottom row';
   }
+  // Parked behind the live position: say so, or a board that ignores clicks and
+  // an agent that won't move look like a bug.
+  if (!atTip()) sub.textContent = 'Reviewing history — ▶ returns to the live position';
 }
 
 // ── Input ─────────────────────────────────────────────────────────────────────
@@ -1022,10 +1160,35 @@ function bodyToAction(body) {
   return { type: 'wall', x: body.x, y: body.y, orientation: body.orientation };
 }
 
+// Is the displayed position the live one (the end of the timeline)?
+function atTip() { return viewIdx === timeline.length - 1; }
+
+function clearAdvance() {
+  if (_advanceTimer !== null) { clearTimeout(_advanceTimer); _advanceTimer = null; }
+}
+
+// Abandon whatever search we're waiting on. The worker keeps computing until it
+// notices its generation is stale; its reply is discarded on arrival.
+function cancelSearch() {
+  _searchGen++;
+  agentThinking = false;
+  _thinkDone = 0; _thinkTotal = 0;
+  clearAdvance();
+}
+
 function postMove(body) {
   if (!gameState || gameState.isFinished()) return;
-  gameHistory.push(gameState);
-  gameState = gameState.next(bodyToAction(body));
+  const action = bodyToAction(body);
+  const label  = actionLabel(gameState, action);
+  // Moving from a rewound position branches the game: whatever used to follow
+  // is no longer reachable from here, so drop it.
+  if (!atTip()) { timeline.length = viewIdx + 1; moves.length = viewIdx; }
+  moves.push({ action, label });
+  gameState = gameState.next(action);
+  timeline.push(gameState);
+  viewIdx = timeline.length - 1;
+  if (_stepOnce) { _stepOnce = false; paused = true; }
+  else           { paused = false; }
   applyState(gameState.serialize());
 }
 
@@ -1034,25 +1197,108 @@ function initGame(boardsize, walls) {
   if (boardsize === undefined) boardsize = v.boardsize;
   if (walls === undefined) walls = v.walls;
   gameState = new State({ boardsize, walls_p1: walls, walls_p2: walls });
+  timeline  = [gameState];
+  moves     = [];
+  viewIdx   = 0;
   applyState(gameState.serialize());
 }
 
 function resetGame() {
-  _searchGen++;
-  agentThinking = false;
-  gameHistory.length = 0;
+  cancelSearch();
+  _stepOnce = false;
+  // `paused` is deliberately preserved: hitting New Game during a running
+  // AI vs AI game should start the next one running too.
   initGame();
 }
 
-function undoMove() {
-  if (agentThinking) { _searchGen++; agentThinking = false; }
-  const count     = gameMode === 'hvh' ? 1 : 2;
-  const available = Math.min(count, gameHistory.length);
-  // Nothing to undo, but the search above was already cancelled — refresh so the
-  // status text and progress bar don't keep claiming the agent is thinking.
-  if (!available) { updateSidebar(); return; }
-  for (let i = 0; i < available; i++) gameState = gameHistory.pop();
+// ── Timeline navigation ───────────────────────────────────────────────────────
+// Mechanical jump. Used by both user navigation and the replay ticker, so it
+// must NOT touch `paused` — the ticker relies on it staying false.
+function gotoIndex(i) {
+  cancelSearch();
+  viewIdx   = Math.max(0, Math.min(i, timeline.length - 1));
+  gameState = timeline[viewIdx];
   applyState(gameState.serialize());
+}
+
+// User navigation (arrow buttons, scrubber, keyboard). Landing behind the live
+// position parks the game there; landing exactly on it resumes play.
+function seekTo(i) {
+  const t           = Math.max(0, Math.min(i, timeline.length - 1));
+  const shouldPause = t < timeline.length - 1;
+  _stepOnce = false;
+  if (t === viewIdx) {
+    if (shouldPause === paused) { renderTimeline(); return; }
+    paused = shouldPause;
+    if (paused) cancelSearch(); else maybeAdvance();
+    updateSidebar();
+    return;
+  }
+  paused = shouldPause;
+  gotoIndex(t);
+}
+
+function stepBack() { seekTo(viewIdx - 1); }
+
+function stepForward() {
+  if (!atTip()) { seekTo(viewIdx + 1); return; }
+  // At the live position there is nothing recorded to step to, so ▶ means "let
+  // this side make one move, then stop again" — the natural single-step for a
+  // paused AI vs AI game. A game that is already running needs no nudge.
+  if (!canStepForwardLive()) return;
+  _stepOnce = true;
+  maybeAdvance();
+  updateSidebar();
+}
+
+// ▶ only does something at the live position if an agent is sitting there
+// waiting for permission to move.
+function canStepForwardLive() {
+  return paused && !state.is_finished && isAgentSide(state.current_player);
+}
+
+function togglePause() {
+  _stepOnce = false;
+  paused    = !paused;
+  if (paused) cancelSearch(); else maybeAdvance();
+  updateSidebar();
+}
+
+function renderTimeline() {
+  const last = timeline.length - 1;
+  const sl   = document.getElementById('timeline-slider');
+  sl.max      = String(last);
+  sl.value    = String(viewIdx);
+  sl.disabled = last === 0;
+  document.getElementById('btn-step-back').disabled = viewIdx === 0;
+  document.getElementById('btn-step-fwd').disabled  = atTip() && !canStepForwardLive();
+  const play = document.getElementById('btn-play');
+  play.innerHTML = paused ? '&#x25B6; Play' : '&#x23F8; Pause';
+  play.classList.toggle('toggle-active', !paused);
+  const label = viewIdx > 0 ? ` · ${moves[viewIdx - 1].label}` : '';
+  document.getElementById('timeline-label').textContent = `${viewIdx} / ${last}${label}`;
+}
+
+// ── Autoplay ──────────────────────────────────────────────────────────────────
+// The single place that decides what happens next after a state change: replay
+// the next recorded move when parked behind the live position, or kick off the
+// agent's search when sitting on it. One timer, always cleared first.
+function maybeAdvance() {
+  clearAdvance();
+  if (paused && !_stepOnce) return;
+  if (!atTip()) {
+    // Scrubbed back and playing again — walk forward through the recorded game
+    // at the display interval instead of re-searching every position.
+    _advanceTimer = setTimeout(() => {
+      _advanceTimer = null;
+      gotoIndex(viewIdx + 1);
+    }, Math.max(80, moveDelayMs));
+    return;
+  }
+  if (state.is_finished || !isAgentSide(state.current_player)) { _stepOnce = false; return; }
+  agentThinking = true;                      // set before the sidebar renders "Thinking…"
+  _thinkingSide = state.current_player;      // ...and before it names the agent
+  _advanceTimer = setTimeout(triggerAgentMove, 80);
 }
 
 function applyState(s) {
@@ -1064,8 +1310,7 @@ function applyState(s) {
   cvs.width    = canvasSize() + LABEL;
   cvs.height   = canvasSize() + LABEL;
   draw(cvs.getContext('2d'));
-  if (!agentThinking && isAgentTurn() && !state.is_finished)
-    agentThinking = true;
+  maybeAdvance();
   updateSidebar();
   if (document.getElementById('nn-panel').classList.contains('open')) openNNPanel();
   if (document.getElementById('analysis-panel').classList.contains('open')) {
@@ -1073,31 +1318,40 @@ function applyState(s) {
     _analysisMctsData = null;
     _analysisNnData = null;
     refreshNnAnalysis();
-    if (_analysisMctsAuto && !isAgentTurn() && !state.is_finished) runMctsAnalysis();
+    // Only analyse a settled position: never compete with a play search for CPU
+    // (agentThinking covers that, since maybeAdvance() ran just above), and
+    // never fire once per position while replaying history.
+    if (_analysisMctsAuto && !state.is_finished && !agentThinking && (paused || atTip()))
+      runMctsAnalysis();
   }
-  if (isAgentTurn() && !state.is_finished) setTimeout(triggerAgentMove, 80);
 }
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 function isAgentTurn() {
   if (!state || state.is_finished) return false;
-  return (gameMode === 'hva' && state.current_player === 2)
-      || (gameMode === 'avh' && state.current_player === 1);
+  return isAgentSide(state.current_player);
 }
 
 function triggerAgentMove() {
+  _advanceTimer = null;
   if (!state || state.is_finished || !agentThinking) return;
-  const gen = ++_searchGen;
-  _thinkDone  = 0;
-  _thinkTotal = selectedAgentId === 'minimax' ? 0 : numSimulations;
+  // Belt and braces: navigating away cancels this timer, so this shouldn't fire
+  // off the tip — but never search a position we're no longer showing.
+  if (!atTip()) { agentThinking = false; return; }
+  const side = state.current_player;
+  const cfg  = sideConfig[side];
+  const gen  = ++_searchGen;
+  _thinkingSide = side;
+  _thinkStart   = performance.now();
+  _thinkDone    = 0;
+  _thinkTotal   = cfg.agentId === 'minimax' ? 0 : cfg.numSims;
   updateSidebar();
-  const w = getWorker();
-  w.postMessage({
+  getPlayWorker(cfg.modelPath).worker.postMessage({
     ...workerPayload(gameState),
-    type:     'think',
-    numSims:  numSimulations,
-    minimaxDepth,
-    agentId:  selectedAgentId,
+    type:         'think',
+    numSims:      cfg.numSims,
+    minimaxDepth: cfg.minimaxDepth,
+    agentId:      cfg.agentId,
     gen,
   });
 }
@@ -1147,8 +1401,16 @@ function currentModelList() {
   return currentBoardVariant === '9x9' ? MODEL_LIST_9X9 : MODEL_LIST_7X7;
 }
 
-function _buildAgentSelect(selEl, currentId, setId, filter) {
-  const list = filter ? _agentList.filter(a => filter.includes(a.id)) : _agentList;
+function agentDefById(id) { return AGENT_DEFS.find(a => a.id === id); }
+
+// `modelPath` decides availability: only the net agent can be unavailable, and
+// only while ITS checkpoint is still loading (or failed) — the other two need no
+// model at all. Availability is therefore per-side, not global.
+function _buildAgentSelect(selEl, currentId, setId, modelPath) {
+  const list = AGENT_DEFS.map(a => ({
+    ...a,
+    available: a.id === 'alphazero' ? nnReady(modelPath) : true,
+  }));
   selEl.innerHTML = '';
   for (const a of list) {
     const opt       = document.createElement('option');
@@ -1158,7 +1420,7 @@ function _buildAgentSelect(selEl, currentId, setId, filter) {
     // reason — always say so.
     const suffix    = a.available ? ''
       : a.id !== 'alphazero' ? ' (unavailable)'
-      : (_nnLoadFailed ? ' (unavailable)' : ' (loading…)');
+      : (nnFailed(modelPath) ? ' (unavailable)' : ' (loading…)');
     opt.textContent = a.name + suffix;
     opt.disabled    = !a.available;
     if (a.id === currentId) opt.selected = true;
@@ -1184,23 +1446,93 @@ function _buildAnalysisAgentSelect() {
   sel.appendChild(opt);
 }
 
+// One template for both sides, so their controls can't drift apart.
+function agentCardHTML(side) {
+  return `
+    <div class="card-label" style="display:flex;align-items:center;gap:6px">
+      <span class="pawn-dot ${side === 1 ? 'blue' : 'red'}"></span>Player ${side} agent
+    </div>
+    <select id="agent-select-p${side}" class="agent-select"></select>
+    <div id="agent-desc-p${side}" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+    <div id="model-picker-row-p${side}" style="display:none">
+      <span style="font-size:11px;color:var(--muted)">Checkpoint</span>
+      <select id="model-select-p${side}" class="agent-select" style="margin-top:4px;margin-bottom:8px"></select>
+    </div>
+    <div id="minimax-depth-row-p${side}" style="display:none">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:11px;color:var(--muted);flex:1">Depth</span>
+        <span id="minimax-depth-display-p${side}" style="font-size:12px;font-weight:600">3</span>
+      </div>
+      <input id="minimax-depth-slider-p${side}" type="range" min="2" max="8" step="1" value="3"
+             style="width:100%;accent-color:#3fb950;cursor:pointer;margin-bottom:8px">
+    </div>
+    <div id="sims-row-p${side}" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
+      <span id="sims-display-p${side}" style="font-size:12px;font-weight:600">100</span>
+    </div>
+    <input id="sims-slider-p${side}" type="range" min="0" max="39" step="1" value="26"
+           style="width:100%;accent-color:#3fb950;cursor:pointer">`;
+}
+
+function buildAgentCards() {
+  for (const side of SIDES) {
+    document.getElementById(`agent-card-p${side}`).innerHTML = agentCardHTML(side);
+
+    document.getElementById(`agent-select-p${side}`).addEventListener('change', e => {
+      sideConfig[side].manual  = true;
+      sideConfig[side].agentId = e.target.value;
+      _updateAgentDesc(side);
+      updateAgentRowVisibility(side);
+      // Take effect on the move in progress, not the next one.
+      cancelSearch();
+      maybeAdvance();
+      updateSidebar();
+    });
+
+    document.getElementById(`sims-slider-p${side}`).addEventListener('input', e => {
+      sideConfig[side].numSims = simsFromIndex(Number(e.target.value));
+      document.getElementById(`sims-display-p${side}`).textContent = sideConfig[side].numSims;
+    });
+
+    document.getElementById(`minimax-depth-slider-p${side}`).addEventListener('input', e => {
+      sideConfig[side].minimaxDepth = Number(e.target.value);
+      document.getElementById(`minimax-depth-display-p${side}`).textContent = sideConfig[side].minimaxDepth;
+    });
+
+    document.getElementById(`model-select-p${side}`).addEventListener('change', e => {
+      sideConfig[side].modelPath = e.target.value;
+      cancelSearch();
+      getPlayWorker(sideConfig[side].modelPath);   // starts loading in the background
+      releaseUnusedPlayWorkers();
+      initAgentList();
+      maybeAdvance();
+      updateSidebar();
+    });
+  }
+}
+
+// Which agent cards are relevant in the current mode. The playback-delay row
+// stays put in every mode — replaying the timeline works even in H vs H.
+function updateAgentCardVisibility() {
+  for (const side of SIDES)
+    document.getElementById(`agent-card-p${side}`).style.display = isAgentSide(side) ? '' : 'none';
+}
+
 function initAgentList() {
-  _agentList = AGENT_DEFS.map(a => ({
-    ...a,
-    available: a.id === 'alphazero' ? _nnAvailable
-             : true,
-  }));
-  _buildAgentSelect(
-    document.getElementById('agent-select'),
-    selectedAgentId,
-    id => { selectedAgentId = id; }
-  );
+  for (const side of SIDES) {
+    _buildAgentSelect(
+      document.getElementById(`agent-select-p${side}`),
+      sideConfig[side].agentId,
+      id => { sideConfig[side].agentId = id; },
+      sideConfig[side].modelPath,
+    );
+    _updateAgentDesc(side);
+    buildModelSelect(side);
+    updateAgentRowVisibility(side);
+  }
   _buildAnalysisAgentSelect();
-  _updateAgentDesc();
   _updateAnalysisAgentDesc();
-  buildModelSelect();
   buildAnalysisModelSelect();
-  updateModelPickerVisibility();
   // The Players card shows the agent's name, and only updateSidebar() writes it.
   // Rebuilding the agent list can change which agent is selected (async ONNX
   // loading flips alphazero's availability, and _buildAgentSelect falls back to
@@ -1210,27 +1542,25 @@ function initAgentList() {
   if (state) updateSidebar();
 }
 
-function _updateAgentDesc() {
-  const a = _agentList.find(a => a.id === selectedAgentId);
-  document.getElementById('agent-desc').textContent = a ? a.description : '';
+function _updateAgentDesc(side) {
+  const a = agentDefById(sideConfig[side].agentId);
+  document.getElementById(`agent-desc-p${side}`).textContent = a ? a.description : '';
 }
 
 function _updateAnalysisAgentDesc() {
-  const a = _agentList.find(a => a.id === analysisAgentId);
+  const a = agentDefById(analysisAgentId);
   document.getElementById('analysis-agent-desc').textContent = a ? a.description : '';
 }
 
-function buildModelSelect() {
-  const sel = document.getElementById('model-select');
+function buildModelSelect(side) {
+  const path = sideConfig[side].modelPath;
+  const sel  = document.getElementById(`model-select-p${side}`);
   sel.innerHTML = '';
-  sel.disabled = _modelLoading;
   for (const m of currentModelList()) {
     const opt = document.createElement('option');
     opt.value = m.path;
-    opt.textContent = (_modelLoading && m.path === activeModelPath)
-      ? m.label + ' (loading…)'
-      : m.label;
-    if (m.path === activeModelPath) opt.selected = true;
+    opt.textContent = (m.path === path && nnLoading(path)) ? m.label + ' (loading…)' : m.label;
+    if (m.path === path) opt.selected = true;
     sel.appendChild(opt);
   }
 }
@@ -1250,20 +1580,36 @@ function buildAnalysisModelSelect() {
   }
 }
 
-function updateModelPickerVisibility() {
-  document.getElementById('model-picker-row').style.display =
-    selectedAgentId === 'alphazero' ? '' : 'none';
-  document.getElementById('minimax-depth-row').style.display =
-    selectedAgentId === 'minimax' ? '' : 'none';
-  document.getElementById('sims-row').style.display =
-    selectedAgentId === 'minimax' ? 'none' : 'flex';
-  document.getElementById('sims-slider').style.display =
-    selectedAgentId === 'minimax' ? 'none' : '';
+// Checkpoint picker is only meaningful for the net agent; sims vs depth depends
+// on which search the agent actually runs.
+function updateAgentRowVisibility(side) {
+  const id = sideConfig[side].agentId;
+  document.getElementById(`model-picker-row-p${side}`).style.display  = id === 'alphazero' ? '' : 'none';
+  document.getElementById(`minimax-depth-row-p${side}`).style.display = id === 'minimax' ? '' : 'none';
+  document.getElementById(`sims-row-p${side}`).style.display          = id === 'minimax' ? 'none' : 'flex';
+  document.getElementById(`sims-slider-p${side}`).style.display       = id === 'minimax' ? 'none' : '';
 }
 
-function currentAgentName() {
-  const a = _agentList.find(a => a.id === selectedAgentId);
-  return a ? a.name : 'AI';
+// './models_9x9/best.onnx' -> 'best';
+// './models_9x9/checkpoints/cycle_0056.onnx' -> 'cycle 56'
+function modelShortLabel(path) {
+  const base = String(path).split('/').pop().replace(/\.onnx$/, '');
+  const m    = base.match(/^cycle_0*(\d+)$/);
+  return m ? `cycle ${m[1]}` : base;
+}
+
+// True when both sides are the net on DIFFERENT checkpoints — the headline
+// AI vs AI matchup, and the one case where the agent name alone identifies
+// neither side.
+function isCheckpointDuel() {
+  return SIDES.every(s => isAgentSide(s) && sideConfig[s].agentId === 'alphazero')
+      && sideConfig[1].modelPath !== sideConfig[2].modelPath;
+}
+
+function agentName(side) {
+  const a = agentDefById(sideConfig[side].agentId);
+  const name = a ? a.name : 'AI';
+  return isCheckpointDuel() ? `${name} · ${modelShortLabel(sideConfig[side].modelPath)}` : name;
 }
 
 // ── NN channel viewer ─────────────────────────────────────────────────────────
@@ -1387,8 +1733,8 @@ function renderAnalysis() {
   const nn   = _analysisNnData;
   const mcts = _analysisMctsData;
 
-  const p1Name = gameMode === 'avh' ? currentAgentName() : 'P1';
-  const p2Name = gameMode === 'hva' ? currentAgentName() : 'P2';
+  const p1Name = isAgentSide(1) ? agentName(1) : 'P1';
+  const p2Name = isAgentSide(2) ? agentName(2) : 'P2';
 
   if (nn) {
     const curP   = nn.current_player;
@@ -1542,9 +1888,8 @@ function runMctsAnalysis() {
 // ── Board variant switching ──────────────────────────────────────────────────
 // 7x7 and 9x9 nets are architecturally incompatible (different action-space
 // size), so switching variant always: starts a fresh game at the new
-// boardsize/walls, swaps both play + analysis ONNX sessions to the new
-// variant's default model (via the existing generic 'load_model' worker
-// message — no need to recreate the workers themselves).
+// boardsize/walls, and points both sides plus the analysis panel at the new
+// variant's default model.
 function switchBoardVariant(id) {
   if (id === currentBoardVariant || !BOARD_VARIANTS[id]) return;
   currentBoardVariant = id;
@@ -1554,8 +1899,7 @@ function switchBoardVariant(id) {
     b.classList.toggle('active', b.dataset.board === id));
 
   // Cancel any in-flight play search / analysis work.
-  _searchGen++;
-  agentThinking = false;
+  cancelSearch();
   _analysisGen++;
   _analysisMctsRunning = false;
   document.getElementById('btn-run-mcts').classList.remove('running');
@@ -1563,64 +1907,30 @@ function switchBoardVariant(id) {
   _analysisMctsData = null;
   _analysisNnData = null;
 
-  // Swap both models to the new variant's default net.
-  activeModelPath   = v.defaultModel;
+  // Every loaded play session is now for the wrong board size, so drop them all
+  // and rebuild on the new variant's default net.
+  for (const entry of _playWorkers.values()) entry.worker.terminate();
+  _playWorkers.clear();
+  for (const side of SIDES) {
+    sideConfig[side].modelPath = v.defaultModel;
+    sideConfig[side].manual    = false;
+  }
+  ensurePlayWorkers();
+
+  // The analysis panel keeps its own worker and checkpoint — swapping in place
+  // via 'load_model' is enough there.
   analysisModelPath = v.defaultModel;
-  _nnAvailable = false;
-  _nnLoadFailed = false;
-  _modelLoading = true;
   _analysisNnAvailable = false;
   _analysisNnLoadFailed = false;
   _analysisModelLoading = true;
-  _agentManuallyChanged = false;
   _analysisAgentManuallyChanged = false;
-
-  getWorker().postMessage({ type: 'load_model', path: activeModelPath });
   getAnalysisWorker().postMessage({ type: 'load_model', path: analysisModelPath });
 
   initAgentList();
   resetGame();
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-const canvas = document.getElementById('board');
-setupInput(canvas);
-
-document.querySelectorAll('.board-btn').forEach(btn => {
-  btn.addEventListener('click', () => switchBoardVariant(btn.dataset.board));
-});
-
-document.getElementById('btn-reset').addEventListener('click', resetGame);
-document.getElementById('btn-undo').addEventListener('click', undoMove);
-document.getElementById('btn-flip').addEventListener('click', () => {
-  boardFlipped = !boardFlipped;
-  document.getElementById('btn-flip').classList.toggle('toggle-active', boardFlipped);
-  hoverWall = null;
-  if (state) draw(document.getElementById('board').getContext('2d'));
-});
-document.getElementById('btn-nn').addEventListener('click', () => {
-  const panel = document.getElementById('nn-panel');
-  if (panel.classList.contains('open')) panel.classList.remove('open');
-  else openNNPanel();
-});
-document.querySelectorAll('.mode-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (btn.dataset.mode === gameMode) return;
-    gameMode = btn.dataset.mode;
-    _searchGen++;
-    agentThinking = false;
-    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('agent-card').style.display = gameMode === 'hvh' ? 'none' : '';
-    hoverWall = null;
-    draw(document.getElementById('board').getContext('2d'));
-    updateSidebar();
-    if (state && !state.is_finished && isAgentTurn()) {
-      agentThinking = true;
-      setTimeout(triggerAgentMove, 80);
-    }
-  });
-});
+// ── Slider level tables ───────────────────────────────────────────────────────
 // Explicit sim-count levels, one per slider position (NOT evenly spaced in
 // value — fine (1-step) resolution from 1-20 where low-sim play differs move
 // to move, coarser above that). An index-based slider (uniform tick spacing,
@@ -1635,23 +1945,78 @@ const SIMS_LEVELS = [
 function simsFromIndex(i) {
   return SIMS_LEVELS[Math.max(0, Math.min(i, SIMS_LEVELS.length - 1))];
 }
-document.getElementById('sims-slider').addEventListener('input', e => {
-  numSimulations = simsFromIndex(Number(e.target.value));
-  document.getElementById('sims-display').textContent = numSimulations;
+
+// Same idea for the minimum time a move stays on screen: dense at the low end
+// where the difference between "instant" and "followable" lives.
+const DELAY_LEVELS = [0, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000];
+function delayFromIndex(i) {
+  return DELAY_LEVELS[Math.max(0, Math.min(i, DELAY_LEVELS.length - 1))];
+}
+function delayLabel(ms) { return ms === 0 ? 'none' : `${ms / 1000}s`; }
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('board');
+setupInput(canvas);
+buildAgentCards();
+
+document.querySelectorAll('.board-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchBoardVariant(btn.dataset.board));
 });
-document.getElementById('minimax-depth-slider').addEventListener('input', e => {
-  minimaxDepth = Number(e.target.value);
-  document.getElementById('minimax-depth-display').textContent = minimaxDepth;
+
+document.getElementById('btn-reset').addEventListener('click', resetGame);
+document.getElementById('btn-flip').addEventListener('click', () => {
+  boardFlipped = !boardFlipped;
+  document.getElementById('btn-flip').classList.toggle('toggle-active', boardFlipped);
+  hoverWall = null;
+  if (state) draw(document.getElementById('board').getContext('2d'));
 });
-document.getElementById('agent-select').addEventListener('change', e => {
-  _agentManuallyChanged = true;
-  selectedAgentId = e.target.value;
-  _updateAgentDesc();
-  updateModelPickerVisibility();
-  if (gameMode === 'hvh') return;
-  _searchGen++; agentThinking = false;
-  updateSidebar();
-  if (state && !state.is_finished && isAgentTurn()) setTimeout(triggerAgentMove, 80);
+document.getElementById('btn-nn').addEventListener('click', () => {
+  const panel = document.getElementById('nn-panel');
+  if (panel.classList.contains('open')) panel.classList.remove('open');
+  else openNNPanel();
+});
+
+// ── Timeline controls ─────────────────────────────────────────────────────────
+document.getElementById('btn-step-back').addEventListener('click', stepBack);
+document.getElementById('btn-step-fwd').addEventListener('click', stepForward);
+document.getElementById('btn-play').addEventListener('click', togglePause);
+document.getElementById('timeline-slider').addEventListener('input', e => seekTo(Number(e.target.value)));
+document.addEventListener('keydown', e => {
+  // A focused slider or select owns the arrow keys — there are four sliders on
+  // this page (sims, depth, delay, timeline), so never steal them.
+  if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === 'ArrowLeft')       { e.preventDefault(); stepBack(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); stepForward(); }
+  else if (e.key === ' ')          { e.preventDefault(); togglePause(); }
+});
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.mode === gameMode) return;
+    gameMode = btn.dataset.mode;
+    cancelSearch();
+    _stepOnce = false;
+    // AI vs AI starts parked so both agents can be configured before the game
+    // runs off on its own. Every other mode resumes, so that leaving a paused
+    // AI vs AI game doesn't silently freeze the agent in H vs AI. Reviewing
+    // history stays put either way.
+    paused = gameMode === 'ava' || !atTip();
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    updateAgentCardVisibility();
+    hoverWall = null;
+    // Whose turn it is didn't change, but who controls it did: the destination
+    // highlights and wall preview are human-only affordances.
+    landing = computeLanding();
+    draw(document.getElementById('board').getContext('2d'));
+    maybeAdvance();
+    updateSidebar();
+  });
+});
+document.getElementById('delay-slider').addEventListener('input', e => {
+  moveDelayMs = delayFromIndex(Number(e.target.value));
+  document.getElementById('delay-display').textContent = delayLabel(moveDelayMs);
 });
 document.getElementById('btn-analysis').addEventListener('click', () => {
   const panel = document.getElementById('analysis-panel');
@@ -1686,27 +2051,20 @@ document.getElementById('analysis-model-select').addEventListener('change', e =>
   initAgentList();
   getAnalysisWorker();
 });
-document.getElementById('model-select').addEventListener('change', e => {
-  activeModelPath = e.target.value;
-  _nnAvailable = false;
-  _modelLoading = true;
-  _searchGen++;
-  agentThinking = false;
-  initAgentList();
-  getWorker().postMessage({ type: 'load_model', path: activeModelPath });
-});
 document.getElementById('btn-run-mcts').addEventListener('click', runMctsAnalysis);
 document.getElementById('chk-auto-mcts').addEventListener('change', e => {
   _analysisMctsAuto = e.target.checked;
   if (_analysisMctsAuto && document.getElementById('analysis-panel').classList.contains('open')
-      && state && !state.is_finished && !isAgentTurn())
+      && state && !state.is_finished && !agentThinking)
     runMctsAnalysis();
 });
 
-// Kick off both workers early so ONNX loads in the background
-getWorker();
+// Kick off the workers early so ONNX loads in the background (both sides start
+// on the same checkpoint, so this is one play worker plus the analysis one)
+ensurePlayWorkers();
 getAnalysisWorker();
-// Initial agent list (may show alphazero as loading until model loads)
+// Initial agent list (may show alphazero as loading until the model loads)
+updateAgentCardVisibility();
 initAgentList();
 // Start the game
 initGame();

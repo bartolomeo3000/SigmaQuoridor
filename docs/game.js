@@ -53,6 +53,31 @@ function vertPolicyPermutation(N) {
   return perm;
 }
 
+// ── Action label (matches Python _action_label in app.py) ────────────────────
+// Lives here rather than in mcts_worker.js so the main thread can label plies
+// in the game timeline with the same strings the analysis panel shows.
+const PAWN_ARROW = {
+  '0,1': '↑', '0,-1': '↓', '-1,0': '←', '1,0': '→',
+  '-1,1': '↖', '1,1': '↗', '-1,-1': '↙', '1,-1': '↘',
+};
+
+function actionLabel(state, action) {
+  if (action.type === 'pawn') {
+    const [dx, dy] = action.direction;
+    const arrow     = PAWN_ARROW[`${dx},${dy}`] || `(${dx},${dy})`;
+    const [cx, cy]  = state.isPlayer1Turn() ? state.player1pos : state.player2pos;
+    const [ox, oy]  = state.isPlayer1Turn() ? state.player2pos : state.player1pos;
+    let lx, ly;
+    if (dx === 0 || dy === 0) {
+      const tx = cx + dx, ty = cy + dy;
+      if (tx === ox && ty === oy) { lx = cx + 2 * dx; ly = cy + 2 * dy; }
+      else                        { lx = tx; ly = ty; }
+    } else { lx = cx + dx; ly = cy + dy; }
+    return `${arrow}(${lx},${ly})`;
+  }
+  return (action.orientation === 'h' ? 'H' : 'V') + `(${action.x},${action.y})`;
+}
+
 // ============================================================
 class State {
   /**
