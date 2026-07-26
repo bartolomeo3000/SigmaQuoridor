@@ -24,7 +24,7 @@ waitress
 # exported graph against the PyTorch model it came from.
 onnx
 
-# Used by data_analysis.ipynb.
+# Used for data analysis.
 pandas
 tqdm
 matplotlib
