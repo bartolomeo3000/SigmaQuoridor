@@ -483,7 +483,7 @@ expectations alongside.
 One thing to get right from the start: the board is always shown to the network from the
 side-to-move's perspective, so for player 2 it is flipped. The policy has to be flipped the same
 way, everywhere — training targets, serving, self-play, and the JS frontend. If those disagree
-the model just plays badly as player 2 without anything erroring.
+the model just plays way worse without anything erroring.
 `tests/test_canon_consistency.py` checks it.
 
 ---
@@ -550,8 +550,6 @@ script there needs `import _bootstrap` before importing project modules.
 
 ## Gotchas
 
-Things that fail *quietly* — collected the hard way.
-
 - **Run everything from the repo root.** Paths are relative to the working directory.
 - **`best.pt` means "latest", not "best".** There is no promotion gate; every cycle overwrites it.
   Confirm with a tournament before trusting or deploying a checkpoint.
@@ -561,13 +559,13 @@ Things that fail *quietly* — collected the hard way.
   the wrong buffer instead of erroring.
 - **Falling loss ≠ a stronger engine.** Losses are in-sample on a moving buffer. Only head-to-head
   results are evidence.
+- **Self-play degenerating to a thin set of unique variants.** You don't want your self-play to duplicate the same game trajectories within one cycle, as that would lead to the net overfitting and overall playing strength regression. Monitor that from time to time, and if needed, loosen the temperature schedule.
 - **The endgame solver can stall self-play.** `--solver-max-total-walls 2` occasionally hit 4-second
   timeouts that starved the search threads; `1` solves ~30k endgames per cycle with zero timeouts.
   Watch the `solver: N calls, M timeouts` line — if `M` climbs, lower the cap or the time limit.
 - **Don't delete checkpoints that appear in a tournament series roster.** Game reuse matches on
   model path; if the file is gone, those pairs can neither be reused nor replayed.
-- **Benchmark numbers are hardware-specific.** Anything in `docs/cpp_selfplay_notes.md` measured on
-  Apple MPS is not a valid baseline for CUDA. Re-sweep batch/parallel settings on your own machine.
+- **Benchmark numbers are hardware-specific.** Re-sweep batch/parallel/t-table/solver settings on your own machine.
 
 ---
 
