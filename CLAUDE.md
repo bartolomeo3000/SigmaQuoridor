@@ -153,11 +153,15 @@ PyTorch model. `export_onnx.py` converts trained `.pt` checkpoints to ONNX for `
 `docs/game.js` and `docs/mcts_worker.js` are a from-scratch **JavaScript** reimplementation of the
 engine/MCTS (a third engine implementation, running the exported ONNX model client-side), not a
 consumer of `game.py`/`quoridor_cpp`. Both its board-variant default and `app.py`'s are 9x9, but
-they're set independently (`currentBoardVariant` in `docs/index.html` vs `app.py`'s args) — check
+they're set independently (`currentBoardVariant` in `docs/app.js` vs `app.py`'s args) — check
 both if changing default board size anywhere.
 
-The whole frontend app is inline in `docs/index.html` (there is no separate app.js/css). Things
-worth knowing before editing it:
+The frontend is three plain files with no build step: `docs/index.html` (markup only),
+`docs/app.css` and `docs/app.js`. `app.js` is loaded as a **classic** script at the end of
+`<body>`, right after `game.js` — its top-level wiring calls `getElementById` immediately with no
+`DOMContentLoaded`, so it must stay in that position, and it can't become an ES module (`game.js`
+also has to stay classic because `mcts_worker.js` pulls it in via `importScripts`). Things worth
+knowing before editing it:
 
 - **Four modes** (`gameMode`: `hvh`/`hva`/`avh`/`ava`) with **per-side agent configuration** —
   `sideConfig[1|2]` carries each side's agent, sims, minimax depth, temperature and checkpoint,

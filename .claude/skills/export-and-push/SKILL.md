@@ -63,10 +63,10 @@ unless the user explicitly asks for them in a given run.
 3. **Watch for filename collisions across lineages.** `export_onnx.py` picks checkpoint
    ONNX files by cycle number modulo `CKPT_STEP`, and different lineages can produce the
    same filename (e.g. `cycle_0061.onnx`) for what is actually a *different* underlying
-   network. Before committing, grep `docs/index.html` for any hardcoded picker entries
+   network. Before committing, grep `docs/app.js` for any hardcoded picker entries
    that reference a filename you're about to overwrite:
    ```
-   grep -n "cycle_0" docs/index.html
+   grep -n "cycle_0" docs/app.js
    ```
    If a modified/new file's name matches a picker entry that used to point at a
    *different* lineage's history, flag it to the user and ask how to proceed (accept the
