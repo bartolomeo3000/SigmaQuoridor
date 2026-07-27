@@ -258,9 +258,8 @@ plays a respectable game.
 
 In the shot above the network can barely separate its top three — `H(6,5)` **17.8%**, `←(5,3)`
 **16.6%**, `↑(6,4)` **16.0%** — and search splits them into **41.0%**, **25.0%** and **16.0%**. It
-also pulls `H(6,4)` up from **2.5%** to **13.0%**, and ends up rating the position better for
-Player 1 than the value head did (**43%** against **29%**). That gap is what the training loop
-learns from.
+also pulls `H(6,4)` up from **2.5%** to **13.0%**. That gap between the prior and the visit counts
+is what the policy head is trained toward.
 
 ---
 
