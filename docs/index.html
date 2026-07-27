@@ -40,7 +40,7 @@
       position: absolute;
       left: calc(100% + 32px);
       top: 0;
-      width: 196px;
+      width: 230px;
       display: flex;
       flex-direction: column;
       gap: 12px;
@@ -104,22 +104,8 @@
     .player-name { font-size: 13px; font-weight: 600; flex: 1; }
     .wall-count  { font-size: 12px; color: var(--muted); }
 
-    /* ── status ──
-       Every line here is reserved at its worst-case height, because this card
-       sits above Mode and the agent cards: anything that grows or shrinks with
-       the game state (a search starting, a two-line agent name, the progress
-       bar appearing) would shove the whole sidebar down and back up again.
-       Two lines covers the longest strings either line can hold at 196px. */
-    #status-text {
-      font-size: 14px; font-weight: 600;
-      line-height: 1.25;
-      min-height: 2.5em;
-    }
-    #status-sub {
-      font-size: 11px; color: var(--muted); margin-top: 4px;
-      line-height: 1.3;
-      min-height: 2.6em;
-    }
+    /* No status text — turn/agent are in the Players card, search progress is
+       the bar at the bottom of it, the result is drawn over the board. */
 
     /* ── button ── */
     button {
@@ -143,36 +129,72 @@
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--text);
-      padding: 8px 10px;
+      /* right padding clears the arrow — checkpoint labels are long enough that
+         without it the text runs underneath it */
+      padding: 8px 28px 8px 10px;
       border-radius: 8px;
       font-size: 13px;
       font-family: inherit;
       cursor: pointer;
       margin-bottom: 8px;
       appearance: none;
+      text-overflow: ellipsis;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-position: right 10px center;
+      transition: border-color 0.15s;
     }
+    .agent-select:hover { border-color: var(--muted); }
     .agent-select:focus { outline: none; border-color: var(--muted); }
     .agent-select option:disabled { color: var(--muted); }
 
+    /* .agent-select:focus above kills the default outline, so put one back for
+       keyboard users. */
+    button:focus-visible,
+    select:focus-visible,
+    input:focus-visible {
+      outline: 2px solid #8ab4ff;
+      outline-offset: 2px;
+    }
+
+    /* Dark scrollbars for the panels that scroll. */
+    #analysis-panel, #nn-panel, .move-bar-list {
+      scrollbar-width: thin;
+      scrollbar-color: #3d3d3d transparent;
+    }
+    #analysis-panel::-webkit-scrollbar,
+    #nn-panel::-webkit-scrollbar,
+    .move-bar-list::-webkit-scrollbar { width: 9px; height: 9px; }
+    #analysis-panel::-webkit-scrollbar-track,
+    #nn-panel::-webkit-scrollbar-track,
+    .move-bar-list::-webkit-scrollbar-track { background: transparent; }
+    #analysis-panel::-webkit-scrollbar-thumb,
+    #nn-panel::-webkit-scrollbar-thumb,
+    .move-bar-list::-webkit-scrollbar-thumb {
+      background: #3d3d3d;
+      border-radius: 5px;
+    }
+    #analysis-panel::-webkit-scrollbar-thumb:hover,
+    #nn-panel::-webkit-scrollbar-thumb:hover,
+    .move-bar-list::-webkit-scrollbar-thumb:hover { background: #4f4f4f; }
+
     /* ── mode selector ── */
     .mode-btn-group { display: flex; gap: 6px; }
-    /* Four modes don't fit one row in the 196px sidebar — lay them out 2x2.
+    /* Four modes don't fit one row in the sidebar — lay them out 2x2.
        The Board card still uses .mode-btn-group (only two buttons). */
     .mode-btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     .mode-btn, .board-btn { flex: 1; padding: 7px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px; }
     .mode-btn.active, .board-btn.active { background: rgba(255,255,255,0.07); border-color: var(--muted); }
 
-    /* ── thinking animation ── */
-    @keyframes thinking-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
-    #status-text.thinking { animation: thinking-pulse 1.2s ease-in-out infinite; }
+    /* ── thinking animation ──
+       On the searching side's own dot in the Players card, so "who is thinking"
+       and "who is to move" are the same piece of UI instead of two. */
+    @keyframes thinking-pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+    .player-entry.thinking .pawn-dot { animation: thinking-pulse 1.1s ease-in-out infinite; }
 
     /* ── search progress (finished MCTS simulations) ──
-       The track is always in the layout and simply sits empty when idle — it
-       used to be display:none, which made it push everything below it down the
-       moment a search started. */
+       Always in the layout, empty when idle: toggling it would shift every card
+       below it each time a search starts. */
     .sim-progress {
       height: 4px;
       margin-top: 8px;
@@ -255,6 +277,8 @@
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
+    /* Parked on an earlier position. */
+    #timeline-label.reviewing { color: #d9a05b; }
 
     /* ── NN channel viewer ── */
     /* Absolute so its width never feeds back into #layout: the sidebar is
@@ -316,6 +340,16 @@
       padding: 20px 24px;
     }
     #analysis-panel.open { display: block; }
+    /* Not enough room in the left rail: stack it under the board like the NN
+       panel. body centres its content, so an overflowing child is clipped with
+       no scrollbar rather than reachable. */
+    #analysis-panel.stacked {
+      right: auto;
+      left: 50%;
+      top: calc(100% + 16px);
+      transform: translateX(-50%);
+      max-height: none;
+    }
     #analysis-panel h2 { font-size: 15px; font-weight: 700; margin-bottom: 16px; }
     .analysis-section { margin-bottom: 18px; }
     .analysis-section-title {
@@ -369,6 +403,8 @@
     </div>
   </div>
 
+  <!-- Whose turn (highlighted row), who's thinking (pulsing dot) and how far the
+       search has got (the bar) are all one card — they're the same question. -->
   <div class="card">
     <div class="card-label">Players</div>
     <div class="player-entry" id="pe-p1">
@@ -381,14 +417,7 @@
       <span class="player-name" id="name-p2">Player 2</span>
       <span class="wall-count" id="walls-p2"></span>
     </div>
-  </div>
-
-  <div class="card">
-    <div class="card-label">Status</div>
-    <div id="status-text">Loading…</div>
-    <div id="status-sub"></div>
     <div id="think-progress" class="sim-progress"><div id="think-progress-fill"></div></div>
-    <div id="status-ply" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
   </div>
 
   <div class="card">
@@ -544,7 +573,21 @@ const CLR = {
   pawn1:            '#3fb950',
   pawn2:            '#f85149',
   pawnStroke:       'rgba(255,255,255,0.7)',
+  // last move played — tint on the cell it left, ring on the one it reached
+  lastFrom1:        'rgba(63,185,80,0.20)',
+  lastRing1:        'rgba(99,220,116,0.65)',
+  lastFrom2:        'rgba(248,81,73,0.20)',
+  lastRing2:        'rgba(255,130,124,0.65)',
+  lastWall:         'rgba(255,196,120,0.95)',
+  lastWallGlow:     'rgba(255,170,60,0.85)',
 };
+
+// Cosmetic transition for the move just played: the pawn slides to its new cell,
+// a freshly placed wall fades in. Paint-time only — `state` is already the
+// post-move position, so logic and hit-testing don't see any of it.
+const ANIM_MS = 170;
+let _anim    = null;   // {kind:'pawn', player, from, to, t0} | {kind:'wall', t0}
+let _animRAF = null;
 
 // ── Game state ───────────────────────────────────────────────────────────────
 // `gameState` is the canonical State instance for the position on screen.
@@ -608,6 +651,9 @@ function _defaultSideConfig() {
     agentId:      'alphazero',
     numSims:      100,
     minimaxDepth: 3,
+    // 0 = always play the most-visited move; above 0 samples from the visit
+    // counts, so repeated games diverge.
+    temperature:  0,
     modelPath:    currentVariant().defaultModel,
     manual:       false,
   };
@@ -722,11 +768,10 @@ function handlePlayWorkerMessage(e, path) {
     // not clear the flag belonging to the search that superseded it.
     if (d.gen !== _searchGen) return;
     if (!gameState || gameState.isFinished()) { agentThinking = false; return; }
-    // In AI vs AI, hold the move back until it has been at least moveDelayMs
-    // since the search started, so a fast agent stays watchable; agentThinking
-    // stays true through the wait, keeping the board locked and the bar full.
-    // When a human is waiting on the AI's reply, any hold is just lag — play it
-    // as soon as it's ready, whatever the playback slider says.
+    // In AI vs AI, hold the move until moveDelayMs has passed since the search
+    // started, so a fast agent stays watchable. agentThinking stays true through
+    // the wait, which keeps the board locked. Never applied in hva/avh: the
+    // human is waiting on that reply.
     const gen  = d.gen;
     const wait = gameMode === 'ava'
       ? Math.max(0, moveDelayMs - (performance.now() - _thinkStart))
@@ -835,9 +880,7 @@ function pixelToCell(px, py) {
 }
 
 function computeLanding() {
-  // Destination highlights are a "you can click here" affordance, so don't draw
-  // them on a side the human doesn't control — otherwise an AI vs AI board sits
-  // permanently lit up with squares nobody can click.
+  // Highlights mean "you can click here", so only for a side the human controls.
   if (!state || state.is_finished || isAgentTurn()) return [];
   const [cx, cy] = state.current_player === 1 ? state.player1pos : state.player2pos;
   const [ox, oy] = state.current_player === 1 ? state.player2pos : state.player1pos;
@@ -917,12 +960,142 @@ function draw(ctx) {
   ctx.save();
   ctx.translate(LABEL, 0);
   drawCells(ctx);
+  drawLastMoveCell(ctx);   // under the walls
   drawWalls(ctx);
+  drawLastMoveWall(ctx);   // over the wall it highlights
   drawWallPreview(ctx);
   drawAnalysisHover(ctx);
   drawPawns(ctx);
+  drawGameOver(ctx);
   ctx.restore();
   drawLabels(ctx);
+}
+
+// Result of a finished game, over the board itself. Scrubbing back to an
+// earlier position clears it, since that position isn't terminal.
+function drawGameOver(ctx) {
+  if (!state.is_finished) return;
+  const size = canvasSize();
+  // Fade in with the winning move rather than slamming on mid-slide.
+  ctx.globalAlpha = _anim ? animProgress() : 1;
+
+  ctx.fillStyle = 'rgba(18,16,14,0.72)';
+  ctx.fillRect(0, 0, size, size);
+
+  // Redraw the pawns at full strength on top of the scrim, so the final
+  // position stays readable underneath the verdict.
+  drawPawns(ctx);
+
+  const win  = state.winner;
+  const mid  = size / 2;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor  = 'rgba(0,0,0,0.85)';
+  ctx.shadowBlur   = 12;
+  ctx.fillStyle    = win === 1 ? CLR.pawn1 : win === 2 ? CLR.pawn2 : '#d0c8bc';
+  ctx.font         = `700 ${Math.round(size * 0.082)}px 'Segoe UI', system-ui, sans-serif`;
+  ctx.fillText(win ? `Player ${win} wins` : 'Draw', mid, mid - size * 0.035);
+
+  ctx.fillStyle = 'rgba(230,225,218,0.82)';
+  ctx.font      = `500 ${Math.round(size * 0.032)}px 'Segoe UI', system-ui, sans-serif`;
+  // Name the agent only when there is one — for a human side the headline
+  // already said "Player N".
+  const who = win && isAgentSide(win) ? `${agentName(win)} · ` : '';
+  const sub = win ? `${who}${state.depth} plies`
+                  : `Max depth reached · ${state.depth} plies`;
+  ctx.fillText(sub, mid, mid + size * 0.042);
+
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur  = 0;
+  ctx.globalAlpha = 1;
+}
+
+// ── Last move ────────────────────────────────────────────────────────────────
+// The move that produced the position on screen, plus the position it came from
+// (needed for a pawn's origin cell).
+function lastMovePlayed() {
+  if (viewIdx <= 0 || !moves[viewIdx - 1]) return null;
+  return { action: moves[viewIdx - 1].action, prev: timeline[viewIdx - 1] };
+}
+
+function drawLastMoveCell(ctx) {
+  const lm = lastMovePlayed();
+  if (!lm || lm.action.type !== 'pawn') return;
+  const mover = lm.prev.getCurrentPlayer();
+  const from  = mover === 1 ? lm.prev.player1pos : lm.prev.player2pos;
+  const to    = mover === 1 ? state.player1pos   : state.player2pos;
+  const tint  = mover === 1 ? CLR.lastFrom1 : CLR.lastFrom2;
+  const ring  = mover === 1 ? CLR.lastRing1 : CLR.lastRing2;
+
+  const o = cellOrigin(from[0], from[1]);
+  rrect(ctx, o.x, o.y, CELL, CELL, CELL_R);
+  ctx.fillStyle = tint;
+  ctx.fill();
+
+  // Inset so the ring clears the pawn sitting in the middle of the cell.
+  const d = cellOrigin(to[0], to[1]);
+  rrect(ctx, d.x + 2.5, d.y + 2.5, CELL - 5, CELL - 5, CELL_R);
+  ctx.strokeStyle = ring;
+  ctx.lineWidth   = 2;
+  ctx.stroke();
+}
+
+function drawLastMoveWall(ctx) {
+  const lm = lastMovePlayed();
+  if (!lm || lm.action.type !== 'wall') return;
+  const { x, y, orientation } = lm.action;
+  ctx.fillStyle   = CLR.lastWall;
+  ctx.shadowColor = CLR.lastWallGlow;
+  ctx.shadowBlur  = 12;
+  // A wall fades in over its first frames, then stays highlighted.
+  ctx.globalAlpha = _anim && _anim.kind === 'wall' ? animProgress() : 1;
+  drawOneWall(ctx, x, y, orientation);
+  ctx.globalAlpha = 1;
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur  = 0;
+}
+
+// ── Move animation ───────────────────────────────────────────────────────────
+function animProgress() {
+  if (!_anim) return 1;
+  const t = (performance.now() - _anim.t0) / ANIM_MS;
+  return t >= 1 ? 1 : 1 - Math.pow(1 - t, 3);   // easeOutCubic
+}
+
+// Where to actually paint a pawn this frame: its real cell, unless it's the one
+// mid-slide.
+function animPawnPos(player, pos) {
+  if (!_anim || _anim.kind !== 'pawn' || _anim.player !== player) return pos;
+  const p = animProgress();
+  return [
+    _anim.from[0] + (_anim.to[0] - _anim.from[0]) * p,
+    _anim.from[1] + (_anim.to[1] - _anim.from[1]) * p,
+  ];
+}
+
+function animTick() {
+  _animRAF = null;
+  if (!_anim || !state) return;
+  const done = animProgress() >= 1;
+  draw(document.getElementById('board').getContext('2d'));
+  if (done) { _anim = null; return; }
+  _animRAF = requestAnimationFrame(animTick);
+}
+
+// Called from applyState with the position we were showing a moment ago. Only a
+// forward single-ply transition animates; timeline jumps and new games cut.
+function startMoveAnim(prev, next) {
+  _anim = null;
+  if (_animRAF !== null) { cancelAnimationFrame(_animRAF); _animRAF = null; }
+  if (!prev || next.boardsize !== prev.boardsize || next.depth !== prev.depth + 1) return;
+  const mover = prev.current_player;
+  const before = mover === 1 ? prev.player1pos : prev.player2pos;
+  const after  = mover === 1 ? next.player1pos : next.player2pos;
+  if (before[0] !== after[0] || before[1] !== after[1])
+    _anim = { kind: 'pawn', player: mover, from: before, to: after, t0: performance.now() };
+  else
+    _anim = { kind: 'wall', t0: performance.now() };
+  _animRAF = requestAnimationFrame(animTick);
 }
 
 function drawLabels(ctx) {
@@ -996,8 +1169,18 @@ function drawWallPreview(ctx) {
 }
 
 function drawPawns(ctx) {
-  drawOnePawn(ctx, state.player1pos[0], state.player1pos[1], CLR.pawn1, String(state.walls_p1));
-  drawOnePawn(ctx, state.player2pos[0], state.player2pos[1], CLR.pawn2, String(state.walls_p2));
+  // Fractional cell coordinates mid-slide; cellOrigin interpolates.
+  const p1 = animPawnPos(1, state.player1pos);
+  const p2 = animPawnPos(2, state.player2pos);
+  // Sliding pawn on top, so it stays visible while jumping over the other one.
+  const moverFirst = _anim && _anim.kind === 'pawn' && _anim.player === 1;
+  if (moverFirst) {
+    drawOnePawn(ctx, p2[0], p2[1], CLR.pawn2, String(state.walls_p2));
+    drawOnePawn(ctx, p1[0], p1[1], CLR.pawn1, String(state.walls_p1));
+  } else {
+    drawOnePawn(ctx, p1[0], p1[1], CLR.pawn1, String(state.walls_p1));
+    drawOnePawn(ctx, p2[0], p2[1], CLR.pawn2, String(state.walls_p2));
+  }
 }
 
 function drawOnePawn(ctx, gx, gy, color, label) {
@@ -1044,16 +1227,16 @@ function reportingSide() {
   return _thinkingSide || (state ? state.current_player : 1);
 }
 
-// Bar + live count for the search we're waiting on. Kept separate from
-// updateSidebar() so a progress tick only touches these two nodes. Only the
-// FILL changes — the track stays in the layout empty (see .sim-progress), so
-// starting a search never resizes the status card.
+// The search we're waiting on, as a bar in the Players card. Kept separate from
+// updateSidebar() so a progress tick only touches these two nodes. Only the fill
+// changes; the track itself always stays in the layout (see .sim-progress).
 function renderThinkProgress() {
-  const fill = document.getElementById('think-progress-fill');
-  const show = agentThinking && _thinkTotal > 0;
-  if (!show) { fill.style.width = '0%'; return; }
+  const track = document.getElementById('think-progress');
+  const fill  = document.getElementById('think-progress-fill');
+  const show  = agentThinking && _thinkTotal > 0;
+  if (!show) { fill.style.width = '0%'; track.title = ''; return; }
   fill.style.width = `${Math.min(100, 100 * _thinkDone / _thinkTotal)}%`;
-  document.getElementById('status-sub').textContent = agentDetail(reportingSide());
+  track.title = agentDetail(reportingSide());
 }
 
 // Same, for the analysis panel's MCTS run — this bar replaces what used to be
@@ -1070,34 +1253,16 @@ function updateSidebar() {
   document.getElementById('walls-p2').textContent = `${state.walls_p2} wall${state.walls_p2 !== 1 ? 's' : ''}`;
   document.getElementById('name-p1').textContent = isAgentSide(1) ? agentName(1) : 'Player 1';
   document.getElementById('name-p2').textContent = isAgentSide(2) ? agentName(2) : 'Player 2';
+  // Winner is shown on the board, so no row is "active" once the game is over.
+  const active = state.is_finished ? 0 : state.current_player;
   const pe1 = document.getElementById('pe-p1');
   const pe2 = document.getElementById('pe-p2');
-  pe1.className = 'player-entry' + (state.current_player === 1 && !state.is_finished ? ' active-p1' : '');
-  pe2.className = 'player-entry' + (state.current_player === 2 && !state.is_finished ? ' active-p2' : '');
-  document.getElementById('status-ply').textContent = `Ply ${state.depth}`;
+  pe1.className = 'player-entry' + (active === 1 ? ' active-p1' : '')
+                + (agentThinking && reportingSide() === 1 ? ' thinking' : '');
+  pe2.className = 'player-entry' + (active === 2 ? ' active-p2' : '')
+                + (agentThinking && reportingSide() === 2 ? ' thinking' : '');
   renderThinkProgress();
   renderTimeline();
-  const txt = document.getElementById('status-text');
-  const sub = document.getElementById('status-sub');
-  if (agentThinking) {
-    txt.className = 'thinking';
-    txt.textContent = 'Thinking…';
-    sub.textContent = agentDetail(reportingSide());
-  } else if (state.is_finished) {
-    txt.className = '';
-    txt.textContent = state.winner ? `Player ${state.winner} wins! 🎉` : 'Draw';
-    sub.textContent = state.winner ? 'Game over' : 'Max depth reached';
-  } else {
-    txt.className = '';
-    const name = isAgentSide(state.current_player) ? agentName(state.current_player)
-                                                   : `Player ${state.current_player}`;
-    txt.textContent = `${name}'s turn`;
-    sub.textContent = state.current_player === 1 ? 'Green — reach the top row'
-                                                  : 'Red — reach the bottom row';
-  }
-  // Parked behind the live position: say so, or a board that ignores clicks and
-  // an agent that won't move look like a bug.
-  if (!atTip()) sub.textContent = 'Reviewing history — ▶ returns to the live position';
 }
 
 // ── Input ─────────────────────────────────────────────────────────────────────
@@ -1289,8 +1454,12 @@ function renderTimeline() {
   const play = document.getElementById('btn-play');
   play.innerHTML = paused ? '&#x25B6; Play' : '&#x23F8; Pause';
   play.classList.toggle('toggle-active', !paused);
-  const label = viewIdx > 0 ? ` · ${moves[viewIdx - 1].label}` : '';
-  document.getElementById('timeline-label').textContent = `${viewIdx} / ${last}${label}`;
+  const move = viewIdx > 0 ? ` · ${moves[viewIdx - 1].label}` : '';
+  const lbl  = document.getElementById('timeline-label');
+  lbl.textContent = `${viewIdx} / ${last}${move}`;   // viewIdx IS the ply
+  lbl.classList.toggle('reviewing', !atTip());
+  lbl.title = atTip() ? `Ply ${viewIdx} of ${last}`
+                      : `Reviewing ply ${viewIdx} of ${last} — press ▶ to return to the live game`;
 }
 
 // ── Autoplay ──────────────────────────────────────────────────────────────────
@@ -1301,8 +1470,7 @@ function maybeAdvance() {
   clearAdvance();
   if (paused && !_stepOnce) return;
   if (!atTip()) {
-    // Scrubbed back and playing again — walk forward through the recorded game
-    // at the display interval instead of re-searching every position.
+    // Walk forward through the recorded game rather than re-searching.
     _advanceTimer = setTimeout(() => {
       _advanceTimer = null;
       gotoIndex(viewIdx + 1);
@@ -1316,6 +1484,7 @@ function maybeAdvance() {
 }
 
 function applyState(s) {
+  const prev   = state;
   state        = s;
   landing      = computeLanding();
   legalWallSet = computeLegalWallSet();
@@ -1323,6 +1492,7 @@ function applyState(s) {
   const cvs    = document.getElementById('board');
   cvs.width    = canvasSize() + LABEL;
   cvs.height   = canvasSize() + LABEL;
+  startMoveAnim(prev, s);
   draw(cvs.getContext('2d'));
   maybeAdvance();
   updateSidebar();
@@ -1332,9 +1502,8 @@ function applyState(s) {
     _analysisMctsData = null;
     _analysisNnData = null;
     refreshNnAnalysis();
-    // Only analyse a settled position: never compete with a play search for CPU
-    // (agentThinking covers that, since maybeAdvance() ran just above), and
-    // never fire once per position while replaying history.
+    // Only a settled position: don't compete with a play search for CPU, and
+    // don't fire once per position while replaying history.
     if (_analysisMctsAuto && !state.is_finished && !agentThinking && (paused || atTip()))
       runMctsAnalysis();
   }
@@ -1349,9 +1518,7 @@ function isAgentTurn() {
 function triggerAgentMove() {
   _advanceTimer = null;
   if (!state || state.is_finished || !agentThinking) return;
-  // Belt and braces: navigating away cancels this timer, so this shouldn't fire
-  // off the tip — but never search a position we're no longer showing.
-  if (!atTip()) { agentThinking = false; return; }
+  if (!atTip()) { agentThinking = false; return; }   // never search a hidden position
   const side = state.current_player;
   const cfg  = sideConfig[side];
   const gen  = ++_searchGen;
@@ -1365,6 +1532,7 @@ function triggerAgentMove() {
     type:         'think',
     numSims:      cfg.numSims,
     minimaxDepth: cfg.minimaxDepth,
+    temperature:  cfg.temperature,
     agentId:      cfg.agentId,
     gen,
   });
@@ -1378,9 +1546,11 @@ const AGENT_DEFS = [
 ];
 
 
+// Labels are kept short enough to fit the sidebar select without being
+// ellipsised — the full model path is also set as the select's tooltip.
 const MODEL_LIST_7X7 = [
-  { label: 'supervised_extended  (latest)', path: './models/supervised_extended.onnx' },
-  { label: 'supervised',                    path: './models/supervised.onnx' },
+  { label: 'extended (latest)', path: './models/supervised_extended.onnx' },
+  { label: 'supervised',        path: './models/supervised.onnx' },
   { label: 'Cycle 141', path: './models/checkpoints/cycle_0141.onnx' },
   { label: 'Cycle 131', path: './models/checkpoints/cycle_0131.onnx' },
   { label: 'Cycle 121', path: './models/checkpoints/cycle_0121.onnx' },
@@ -1407,8 +1577,8 @@ const MODEL_LIST_7X7 = [
 // cycle 56 head-to-head (61.1% over 500 games) and took rank 1 in the v7
 // tournament; heads cycle 56 is kept alongside it as the previous best.
 const MODEL_LIST_9X9 = [
-  { label: 'best  (scratch cycle 321)',   path: './models_9x9/best.onnx' },
-  { label: 'previous best (heads cycle 56)', path: './models_9x9/checkpoints/cycle_0056.onnx' },
+  { label: 'best · scratch 321',  path: './models_9x9/best.onnx' },
+  { label: 'previous · heads 56', path: './models_9x9/checkpoints/cycle_0056.onnx' },
 ];
 
 function currentModelList() {
@@ -1485,7 +1655,16 @@ function agentCardHTML(side) {
       <span id="sims-display-p${side}" style="font-size:12px;font-weight:600">100</span>
     </div>
     <input id="sims-slider-p${side}" type="range" min="0" max="39" step="1" value="26"
-           style="width:100%;accent-color:#3fb950;cursor:pointer">`;
+           style="width:100%;accent-color:#3fb950;cursor:pointer;margin-bottom:8px">
+    <div id="temp-row-p${side}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:11px;color:var(--muted);flex:1"
+              title="0 plays the most-visited move every time; above 0 samples from the visit counts">Temperature</span>
+        <span id="temp-display-p${side}" style="font-size:12px;font-weight:600">argmax</span>
+      </div>
+      <input id="temp-slider-p${side}" type="range" min="0" max="14" step="1" value="0"
+             style="width:100%;accent-color:#3fb950;cursor:pointer">
+    </div>`;
 }
 
 function buildAgentCards() {
@@ -1513,6 +1692,12 @@ function buildAgentCards() {
       document.getElementById(`minimax-depth-display-p${side}`).textContent = sideConfig[side].minimaxDepth;
     });
 
+    document.getElementById(`temp-slider-p${side}`).addEventListener('input', e => {
+      sideConfig[side].temperature = tempFromIndex(Number(e.target.value));
+      document.getElementById(`temp-display-p${side}`).textContent =
+        tempLabel(sideConfig[side].temperature);
+    });
+
     document.getElementById(`model-select-p${side}`).addEventListener('change', e => {
       sideConfig[side].modelPath = e.target.value;
       cancelSearch();
@@ -1530,6 +1715,8 @@ function buildAgentCards() {
 function updateAgentCardVisibility() {
   for (const side of SIDES)
     document.getElementById(`agent-card-p${side}`).style.display = isAgentSide(side) ? '' : 'none';
+  // Nothing ever searches in H vs H, so the track would sit empty forever.
+  document.getElementById('think-progress').style.display = gameMode === 'hvh' ? 'none' : '';
 }
 
 function initAgentList() {
@@ -1574,7 +1761,8 @@ function buildModelSelect(side) {
     const opt = document.createElement('option');
     opt.value = m.path;
     opt.textContent = (m.path === path && nnLoading(path)) ? m.label + ' (loading…)' : m.label;
-    if (m.path === path) opt.selected = true;
+    opt.title = m.path;
+    if (m.path === path) { opt.selected = true; sel.title = m.path; }
     sel.appendChild(opt);
   }
 }
@@ -1589,19 +1777,23 @@ function buildAnalysisModelSelect() {
     opt.textContent = (_analysisModelLoading && m.path === analysisModelPath)
       ? m.label + ' (loading…)'
       : m.label;
-    if (m.path === analysisModelPath) opt.selected = true;
+    opt.title = m.path;
+    if (m.path === analysisModelPath) { opt.selected = true; sel.title = m.path; }
     sel.appendChild(opt);
   }
 }
 
 // Checkpoint picker is only meaningful for the net agent; sims vs depth depends
-// on which search the agent actually runs.
+// on which search the agent runs, and temperature needs visit counts to sample
+// from — alpha-beta has none, so minimax gets neither.
 function updateAgentRowVisibility(side) {
-  const id = sideConfig[side].agentId;
+  const id      = sideConfig[side].agentId;
+  const isMcts  = id !== 'minimax';
   document.getElementById(`model-picker-row-p${side}`).style.display  = id === 'alphazero' ? '' : 'none';
   document.getElementById(`minimax-depth-row-p${side}`).style.display = id === 'minimax' ? '' : 'none';
-  document.getElementById(`sims-row-p${side}`).style.display          = id === 'minimax' ? 'none' : 'flex';
-  document.getElementById(`sims-slider-p${side}`).style.display       = id === 'minimax' ? 'none' : '';
+  document.getElementById(`sims-row-p${side}`).style.display          = isMcts ? 'flex' : 'none';
+  document.getElementById(`sims-slider-p${side}`).style.display       = isMcts ? '' : 'none';
+  document.getElementById(`temp-row-p${side}`).style.display          = isMcts ? '' : 'none';
 }
 
 // './models_9x9/best.onnx' -> 'best';
@@ -1687,6 +1879,25 @@ function openNNPanel() {
   positionNNPanel();
 }
 
+// The analysis panel lives in the rail to the left of the board. That rail only
+// exists on a wide enough window; when it doesn't, put the panel under the board
+// rather than off the edge of the screen.
+function positionAnalysisPanel() {
+  const panel = document.getElementById('analysis-panel');
+  if (!panel.classList.contains('open')) return;
+  // #layout spans the board column only (both side panels are out of flow), so
+  // its left edge is the room available — and it doesn't move when we restack.
+  const room = document.getElementById('layout').getBoundingClientRect().left;
+  panel.classList.toggle('stacked', room < 340 + 24 + 16);
+}
+
+// Both panels are positioned against each other, and the NN one has to go last
+// because it sits below whatever the analysis panel ended up being.
+function repositionPanels() {
+  positionAnalysisPanel();
+  positionNNPanel();
+}
+
 // The side panels are absolutely positioned, so #layout's height only covers the
 // board column — either of them can hang lower than it. Push the NN panel below
 // the lowest of the three so it can never clip a corner of one.
@@ -1721,6 +1932,7 @@ let _analysisGen         = 0;
 
 function openAnalysisPanel() {
   document.getElementById('analysis-panel').classList.add('open');
+  positionAnalysisPanel();
   _analysisMctsData = null;
   refreshNnAnalysis();
 }
@@ -1823,7 +2035,7 @@ function renderAnalysis() {
   }
   // Rows just added/removed change this panel's height, which the NN panel
   // below is positioned against.
-  positionNNPanel();
+  repositionPanels();
 }
 
 function drawAnalysisHover(ctx) {
@@ -1960,6 +2172,18 @@ function simsFromIndex(i) {
   return SIMS_LEVELS[Math.max(0, Math.min(i, SIMS_LEVELS.length - 1))];
 }
 
+// Sampling temperature for the visit-count distribution, same convention as
+// Python's MCTSAgent (mcts.py) and tournament_cpp.py's --temp: 0 is argmax,
+// ~0.3 is what the tournament uses, 1.0 samples the raw visit proportions.
+const TEMP_LEVELS = [
+  0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.25, 1.5, 2.0,
+];
+function tempFromIndex(i) {
+  return TEMP_LEVELS[Math.max(0, Math.min(i, TEMP_LEVELS.length - 1))];
+}
+// 0 gets a word rather than a number — "argmax" says what actually happens.
+function tempLabel(t) { return t === 0 ? 'argmax' : String(t); }
+
 // Same idea for the minimum time a move stays on screen: dense at the low end
 // where the difference between "instant" and "followable" lives.
 const DELAY_LEVELS = [0, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000];
@@ -2036,9 +2260,9 @@ document.getElementById('btn-analysis').addEventListener('click', () => {
   const panel = document.getElementById('analysis-panel');
   if (panel.classList.contains('open')) panel.classList.remove('open');
   else openAnalysisPanel();
-  positionNNPanel();   // that panel's height is part of where the NN panel sits
+  repositionPanels();   // this panel's height is part of where the NN panel sits
 });
-window.addEventListener('resize', positionNNPanel);
+window.addEventListener('resize', repositionPanels);
 document.getElementById('analysis-sims-slider').addEventListener('input', e => {
   analysisNumSims = simsFromIndex(Number(e.target.value));
   document.getElementById('analysis-sims-display').textContent = analysisNumSims;

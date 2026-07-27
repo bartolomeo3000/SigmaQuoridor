@@ -229,8 +229,9 @@ everything runs in your browser (ONNX Runtime Web); no data leaves your machine.
 | **Board** | `7×7 (5 walls)` or `9×9 (10 walls)` — 9×9 is the default and the stronger net |
 | **Mode** | `H vs AI` (default), `AI vs H` (AI moves first), `H vs H`, `AI vs AI` |
 | **Agent** | Per side: `SigmaQuoridor` (net + MCTS), `MCTS` (pure random rollouts), `Minimax` (depth 2–8) |
-| **Checkpoint** | Per side: `best (scratch cycle 321)` or `previous best (heads cycle 56)` — in `AI vs AI` this really does play the current net against its predecessor, each side in its own worker with its own ONNX session |
+| **Checkpoint** | Per side — which exported net that side plays. In `AI vs AI` the two sides can pick different ones, so one checkpoint can play another |
 | **Simulations** | Per side, 1 → 5000, default **100**. This is the AI's thinking budget: 1 = raw network intuition with no search, 5000 = slow and very strong |
+| **Temperature** | Per side, default `argmax` (0) — always play the most-visited move. Above 0 the side samples from its visit counts instead (`visits^(1/T)`, same convention as `mcts.py` and `tournament_cpp.py --temp`), so repeated games diverge |
 | **Playback delay** | *Minimum* time a move stays on screen while a game plays out on its own — `AI vs AI`, and replaying the timeline. 0 → 5 s, default 0.75 s; a search that already took longer isn't held back further. It never applies to the AI's reply to *your* move, which always appears as soon as the search finishes |
 | ◀ ▶ **/ scrubber** | Step one ply back or forward, or drag to any position in the game. The ← / → keys do the same |
 | `▶ Play` / `⏸ Pause` | Start or stop auto-advance (Space). Paused at the live position, ▶ plays exactly one move; parked back in the game, ▶ replays it forward from there |
@@ -239,9 +240,9 @@ everything runs in your browser (ONNX Runtime Web); no data leaves your machine.
 Moving from a rewound position branches the game — everything after it is discarded — so the
 timeline doubles as undo *and* redo.
 
-- **🤖 AI vs AI** — give each side its own agent, budget and checkpoint, then watch. `best` against
-  `previous best` is the same head-to-head the Elo tournament runs, one game at a time, at a speed
-  you can actually follow. Scrub back through any game afterwards, ply by ply.
+- **🤖 AI vs AI** — give each side its own agent, budget and checkpoint, then watch. Point the two
+  sides at different checkpoints and you get the same head-to-head the Elo tournament runs, one
+  game at a time at whatever speed you set. Scrub back through any game afterwards, ply by ply.
 - **📊 Analysis** — win-probability bars (the network's value head, plus the MCTS root value once
   a search finishes) and a ranked move list showing the **network's prior (green) against MCTS's
   visit counts (red)** side by side. That contrast is precisely the "search improves on intuition"
@@ -255,9 +256,11 @@ plays a respectable game.
 
 ![The analysis panel: network priors in green against MCTS visit counts in red](docs/screenshots/analysis.png)
 
-In the shot above, the top move `H(5,3)` is one the network rated **19.3%** but search settled on
-at **66.0%**, while `V(5,0)` went the other way — **48.0%** down to **32.0%**. That gap, in both
-directions, is what the training loop learns from.
+In the shot above the network can barely separate its top three — `H(6,5)` **17.8%**, `←(5,3)`
+**16.6%**, `↑(6,4)` **16.0%** — and search splits them into **41.0%**, **25.0%** and **16.0%**. It
+also pulls `H(6,4)` up from **2.5%** to **13.0%**, and ends up rating the position better for
+Player 1 than the value head did (**43%** against **29%**). That gap is what the training loop
+learns from.
 
 ---
 

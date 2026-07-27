@@ -294,14 +294,37 @@ async function runMCTS(state, numSims, evaluator, cancelToken, onProgress = null
   return root;
 }
 
-async function selectAction(state, numSims, evaluator, cancelToken, onProgress = null) {
+// Pick a child from the root's visit counts, matching Python
+// MCTSAgent.get_policy + select_action (mcts.py): temperature 0 is argmax,
+// above 0 samples proportional to visitCount^(1/T).
+function pickFromVisits(children, temperature) {
+  if (!children.length) return null;
+  let best = children[0];
+  for (const c of children) if (c.visitCount > best.visitCount) best = c;
+  if (!(temperature > 0)) return best;
+  const maxN = best.visitCount;
+  if (maxN <= 0) return children[Math.floor(Math.random() * children.length)];
+
+  // Dividing by maxN cancels in the normalisation below, but keeps
+  // visitCount^(1/T) from overflowing to Infinity at low T (5000^100 does).
+  const invT  = 1 / temperature;
+  const raw   = children.map(c => Math.pow(c.visitCount / maxN, invT));
+  const total = raw.reduce((s, r) => s + r, 0);
+  if (!(total > 0)) return best;
+  let r = Math.random() * total;
+  for (let i = 0; i < children.length; i++) {
+    r -= raw[i];
+    if (r <= 0) return children[i];
+  }
+  return best;   // only reachable through float drift
+}
+
+async function selectAction(state, numSims, evaluator, cancelToken, onProgress = null,
+                            temperature = 0) {
   const root = await runMCTS(state, numSims, evaluator, cancelToken, onProgress);
   if (!root) return null;
-  let best = null, bestCount = -1;
-  for (const c of root.children) {
-    if (c.visitCount > bestCount) { bestCount = c.visitCount; best = c; }
-  }
-  return best ? best.action : (state.getLegalActions()[0] || null);
+  const pick = pickFromVisits(root.children, temperature);
+  return pick ? pick.action : (state.getLegalActions()[0] || null);
 }
 
 async function getPolicy(state, numSims, evaluator, cancelToken, onProgress = null) {
@@ -374,7 +397,7 @@ onmessage = async function (e) {
     } else {
       action = await selectAction(s, numSims, evalFn, gen, (done, total) => {
         if (gen === _activeTaskGen) postMessage({ type: 'progress', done, total, gen });
-      });
+      }, Math.max(0, d.temperature || 0));
     }
     if (gen !== _activeTaskGen) return;  // cancelled
     if (action === null) return;  // cancelled

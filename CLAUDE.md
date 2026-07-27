@@ -160,9 +160,17 @@ The whole frontend app is inline in `docs/index.html` (there is no separate app.
 worth knowing before editing it:
 
 - **Four modes** (`gameMode`: `hvh`/`hva`/`avh`/`ava`) with **per-side agent configuration** —
-  `sideConfig[1|2]` carries each side's agent, sims, minimax depth and checkpoint, and
-  `MODE_AI_SIDES` maps the mode to which sides the AI plays. Anything that used to be a single
-  global (agent id, sim count, model path) is now per-side.
+  `sideConfig[1|2]` carries each side's agent, sims, minimax depth, temperature and checkpoint,
+  and `MODE_AI_SIDES` maps the mode to which sides the AI plays. Anything that used to be a
+  single global (agent id, sim count, model path) is now per-side.
+- **Temperature** is applied in the worker's `pickFromVisits`, same convention as `mcts.py`
+  (0 = argmax, else sample ∝ `visits^(1/T)`). It divides by the max visit count before the power;
+  that cancels in the normalisation but keeps `5000^100` from overflowing to Infinity.
+- **No status card.** Whose turn it is and which agent is playing are the Players card (active
+  row + name); "is it searching" is that row's pulsing `.pawn-dot`; search progress is the
+  `.sim-progress` bar at the bottom of that card (numbers in its `title`); the ply counter is the
+  timeline label (`viewIdx` *is* the ply); the game result is drawn onto the board by
+  `drawGameOver()`.
 - **One play worker per distinct checkpoint** (`_playWorkers`, keyed by model path) so `ava` can
   run two different nets without re-initialising an ONNX session every ply. Each worker derives
   its own `modelFullCanonical` from its `?model=` query, which is what keeps the P2 policy frame
