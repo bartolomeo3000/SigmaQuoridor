@@ -453,6 +453,15 @@ input:focus-visible {
   /* The play view does not scroll, so the board can own every gesture — no
      competing scroll to cancel when a long press starts. */
   #board { touch-action: none; }
+  /* iOS answers a long press with the selection loupe and the callout menu,
+     which is exactly the gesture that places a wall. Killing selection over the
+     whole play area is what stops it; the sheets keep theirs, so the footer
+     link is still selectable. */
+  #layout, #board, #m-players, #timeline-row, #board-actions {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
 
   /* The spare height a width-bound board leaves over goes into touch targets
      rather than padding — every row here is something you tap. */

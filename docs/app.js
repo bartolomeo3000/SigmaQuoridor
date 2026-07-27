@@ -692,10 +692,21 @@ function drawWallPreview(ctx) {
   if (!hasWalls) return;
   const key   = `${hoverWall.orientation}:${hoverWall.ax}:${hoverWall.ay}`;
   const legal = legalWallSet.has(key);
+  ctx.save();
+  // Set while a finger drags it between slots (see updateTouchWall): draw it
+  // where the finger is, dimmed, so "still moving" reads differently from
+  // "locked onto the slot it will go in".
+  const slide = hoverWall.slide || 0;
+  if (slide) {
+    ctx.globalAlpha = 0.7;
+    ctx.translate(hoverWall.orientation === 'h' ? slide : 0,
+                  hoverWall.orientation === 'h' ? 0 : slide);
+  }
   ctx.fillStyle   = legal ? CLR.wallHoverOk  : CLR.wallHoverBad;
   ctx.shadowColor = legal ? CLR.wallHoverOkGlow : CLR.wallHoverBadGlow;
   ctx.shadowBlur  = 10;
   drawOneWall(ctx, hoverWall.ax, hoverWall.ay, hoverWall.orientation);
+  ctx.restore();
   ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
 }
 
@@ -821,7 +832,11 @@ function renderMobileTopbar() {
 // instead: with no scrolling to fight, the press needs no gesture arbitration.
 const TOUCH_HOLD_MS = 300;   // press this long and it becomes a wall drag
 const TOUCH_SLOP    = 10;    // finger travel (px) before then = not a press
-const TOUCH_LIFT    = 18;    // logical px: aim above the fingertip, not under it
+// Screen px, NOT logical: the board is scaled down on a phone, so a lift in board
+// units would shrink with it and leave the wall under the fingertip — the one
+// thing this exists to prevent.
+const TOUCH_LIFT_PX = 46;
+const WALL_SNAP     = 16;    // logical px around a slot where the wall locks on
 let _touchHoldTimer = null;
 let _touchOrigin    = null;  // where the press started, for the slop test
 let _touchLast      = null;  // latest position, in {clientX, clientY} form
@@ -837,13 +852,27 @@ function cancelTouchHold() {
 
 function updateTouchWall(canvas) {
   if (!_touchLast || !state) return;
-  const { px, py } = canvasPos(_touchLast, canvas);
-  const wall     = pixelToWall(px, py - TOUCH_LIFT);
   const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
-  const next     = (wall && hasWalls) ? wall : null;
-  const a = next      ? `${next.orientation}:${next.ax}:${next.ay}`           : null;
-  const b = hoverWall ? `${hoverWall.orientation}:${hoverWall.ax}:${hoverWall.ay}` : null;
-  if (a !== b) { hoverWall = next; draw(canvas.getContext('2d')); }
+  const { px, py, s } = canvasPos(_touchLast, canvas);
+  const aimY = py - TOUCH_LIFT_PX / s;          // aim above the finger, see above
+  const slot = hasWalls ? nearestWall(px, aimY) : null;
+  if (!slot) {
+    if (hoverWall) { hoverWall = null; draw(canvas.getContext('2d')); }
+    return;
+  }
+  // Glide along the wall's own axis instead of jumping a whole slot at a time:
+  // inside WALL_SNAP of the anchor it sits exactly where it would be placed,
+  // and past that it tracks the finger — minus the snap, so leaving the locked
+  // zone doesn't jolt. Only the drawing moves; what gets placed is the slot.
+  const along = slot.orientation === 'h' ? px - slot.cx : aimY - slot.cy;
+  const slide = Math.abs(along) <= WALL_SNAP ? 0
+    : Math.max(-STEP / 2, Math.min(STEP / 2, along - Math.sign(along) * WALL_SNAP));
+  const same = hoverWall && hoverWall.orientation === slot.orientation
+            && hoverWall.ax === slot.ax && hoverWall.ay === slot.ay
+            && hoverWall.slide === slide;
+  if (same) return;
+  hoverWall = { orientation: slot.orientation, ax: slot.ax, ay: slot.ay, slide };
+  draw(canvas.getContext('2d'));
 }
 
 function setupInput(canvas) {
@@ -922,15 +951,17 @@ function setupInput(canvas) {
     }, TOUCH_HOLD_MS);
   }, { passive: true });
 
+  // Not passive: once the drag owns the finger, preventDefault() keeps iOS from
+  // treating the same movement as a text selection on top of it.
   canvas.addEventListener('touchmove', e => {
     if (!_touchOrigin || e.touches.length !== 1) return;
     const t = e.touches[0];
     _touchLast = { clientX: t.clientX, clientY: t.clientY };
-    if (_touchDrag) { updateTouchWall(canvas); return; }
+    if (_touchDrag) { e.preventDefault(); updateTouchWall(canvas); return; }
     const dx = t.clientX - _touchOrigin.clientX;
     const dy = t.clientY - _touchOrigin.clientY;
     if (dx * dx + dy * dy > TOUCH_SLOP * TOUCH_SLOP) cancelTouchHold();
-  }, { passive: true });
+  }, { passive: false });
 
   canvas.addEventListener('touchend', () => {
     const dragged = _touchDrag;
@@ -964,11 +995,34 @@ function setupInput(canvas) {
 
 // Client coordinates -> logical board units. Takes anything with clientX/clientY,
 // so a Touch works as well as a MouseEvent. The scale comes off the rendered box
-// rather than a stored value, which keeps it right even mid-resize.
+// rather than a stored value, which keeps it right even mid-resize; `s` is handed
+// back for callers that need to think in screen px (finger offsets).
 function canvasPos(e, canvas) {
   const rect = canvas.getBoundingClientRect();
   const s    = rect.width / (canvasSize() + LABEL) || 1;
-  return { px: (e.clientX - rect.left) / s - LABEL, py: (e.clientY - rect.top) / s };
+  return { px: (e.clientX - rect.left) / s - LABEL, py: (e.clientY - rect.top) / s, s };
+}
+
+// Nearest wall slot to a point, without requiring the point to be inside a gap:
+// a finger needs something to aim with at all times, not only when it happens to
+// be over a 10px seam. Both orientations' slots are centred on the same lattice
+// (the anchor intersections), so the anchor is one rounding per axis and only the
+// orientation is a real decision — made by which axis the point sits off by more,
+// i.e. how far it is from each of the two seams crossing at that anchor.
+function nearestWall(px, py) {
+  if (!state) return null;
+  const lim = state.boardsize - 2;
+  if (lim < 0) return null;
+  const clamp = v => Math.max(0, Math.min(lim, v));
+  const ax  = clamp(Math.round((px - CELL - GAP / 2) / STEP));
+  const ay  = clamp(flipWallRow(clamp(Math.round((py - CELL - GAP / 2) / STEP))));
+  const cx  = ax * STEP + CELL + GAP / 2;
+  const cy  = flipWallRow(ay) * STEP + CELL + GAP / 2;
+  // Distance to each of the two seams crossing the anchor. The epsilon settles
+  // the exact-centre tie the same way every time — without it float residue on
+  // two values that are both meant to be zero decides the orientation.
+  const orientation = Math.abs(py - cy) <= Math.abs(px - cx) + 1e-6 ? 'h' : 'v';
+  return { ax, ay, cx, cy, orientation };
 }
 
 // ── Game actions ──────────────────────────────────────────────────────────────
