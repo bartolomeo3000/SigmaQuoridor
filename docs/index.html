@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- Injects COOP/COEP headers via Service Worker on hosts that don't set
        them (e.g. GitHub Pages). Required for SharedArrayBuffer / ORT WASM.
        On local dev serve.py already sets the headers, so the SW is a no-op. -->
@@ -65,10 +66,19 @@
   </p>
 </noscript>
 
+<!-- Phone shell. Inert on desktop (CSS keeps it display:none); below the
+     breakpoint applyShell() moves the real cards into #m-players and the
+     sheets, so there is never a second copy of any control. -->
+<div id="m-topbar">
+  <span id="m-topbar-variant">9&times;9</span>
+  <span id="m-topbar-mode">H vs AI</span>
+  <span id="m-topbar-status"></span>
+</div>
+
 <div id="layout">
 
 <div id="sidebar">
-  <div class="card">
+  <div class="card" id="card-board">
     <div class="card-label">Board</div>
     <div class="mode-btn-group">
       <button class="board-btn" data-board="7x7">7&times;7 (5 walls)</button>
@@ -78,7 +88,7 @@
 
   <!-- Whose turn (highlighted row), who's thinking (pulsing dot) and how far the
        search has got (the bar) are all one card — they're the same question. -->
-  <div class="card">
+  <div class="card" id="card-players">
     <div class="card-label">Players</div>
     <div class="player-entry" id="pe-p1">
       <div class="pawn-dot blue"></div>
@@ -93,7 +103,7 @@
     <div id="think-progress" class="sim-progress"><div id="think-progress-fill"></div></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-mode">
     <div class="card-label">Mode</div>
     <div class="mode-btn-grid">
       <button class="mode-btn" data-mode="hvh">H vs H</button>
@@ -137,6 +147,10 @@
     <div id="board-wrap">
       <canvas id="board"></canvas>
     </div>
+
+    <!-- Where the Players card goes on the phone: right under the board, so
+         whose turn it is stays next to the thing you are looking at. -->
+    <div id="m-players"></div>
 
     <div id="timeline-row">
       <button id="btn-step-back" title="Previous ply (Left arrow)">&#x25C0;</button>
@@ -214,6 +228,19 @@
 </div>
 
 </div>
+
+<!-- Phone shell: full-screen sheets plus the tab bar that drives them. The
+     sheets start empty — applyShell() fills them by moving the desktop cards
+     and side panels in, and puts them back when the breakpoint is crossed. -->
+<div id="m-sheet-settings" class="m-sheet"></div>
+<div id="m-sheet-analysis" class="m-sheet"></div>
+<div id="m-sheet-nn"       class="m-sheet"></div>
+<nav id="m-tabbar">
+  <button data-tab="play" class="active">Play</button>
+  <button data-tab="analysis">Analysis</button>
+  <button data-tab="nn">NN</button>
+  <button data-tab="settings">Settings</button>
+</nav>
 
 <!-- Game engine (must load before app.js) -->
 <script src="game.js"></script>

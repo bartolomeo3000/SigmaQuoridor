@@ -105,6 +105,14 @@ let moveDelayMs   = 750;
 let _stepOnce     = false;   // one-shot: advance a single move, then re-pause
 let _advanceTimer = null;
 
+// ── Phone breakpoint ──────────────────────────────────────────────────────────
+// One query drives both layouts: app.css switches to the phone shell at the same
+// width, and `isMobile` gates the behaviour that CSS can't express (which nodes
+// live where, touch input, whether the side panels position themselves).
+// applyShell() owns every later write to it.
+const MOBILE_MQ = window.matchMedia('(max-width: 900px)');
+let isMobile = MOBILE_MQ.matches;
+
 // ── Per-side agent configuration ──────────────────────────────────────────────
 // Each side carries its own agent, search budget and checkpoint, which is what
 // makes AI vs AI worth watching (e.g. the current net against its predecessor).
@@ -114,7 +122,9 @@ const SIDES = [1, 2];
 function _defaultSideConfig() {
   return {
     agentId:      'alphazero',
-    numSims:      100,
+    // A phone CPU runs the same 11 MB net through WASM, so it starts lower —
+    // the slider still goes everywhere the desktop one does.
+    numSims:      isMobile ? 50 : 100,
     minimaxDepth: 3,
     // 0 = always play the most-visited move; above 0 samples from the visit
     // counts, so repeated games diverge.
@@ -127,6 +137,9 @@ const sideConfig = { 1: _defaultSideConfig(), 2: _defaultSideConfig() };
 
 const MODE_AI_SIDES = { hvh: [], hva: [2], avh: [1], ava: [1, 2] };
 function isAgentSide(p) { return MODE_AI_SIDES[gameMode].includes(p); }
+// Same wording as the mode buttons, for the phone top bar (where the Mode card
+// isn't on screen).
+const MODE_LABELS = { hvh: 'H vs H', hva: 'H vs AI', avh: 'AI vs H', ava: 'AI vs AI' };
 
 // ── Web Workers ──────────────────────────────────────────────────────────────
 // One play worker per distinct model path. Each worker owns exactly one ONNX
@@ -333,6 +346,56 @@ function cellOrigin(gx, gy) {
 }
 function canvasSize() { return state.boardsize * STEP - GAP; }
 
+// ── Board scaling ─────────────────────────────────────────────────────────────
+// Everything above is drawn in fixed logical units, which on 9x9 come to 658px —
+// wider than a phone. One uniform scale reconciles that with the screen: the
+// backing store is logical * fit * dpr, the CSS box is that over dpr, and draw()
+// installs the matching transform, so no drawing or hit-testing code has to know
+// the board is smaller than it thinks. Desktop is pinned to fit = 1, which keeps
+// its layout untouched and keeps the measurement below (of a box that on desktop
+// is sized BY the canvas) from feeding back into itself.
+let _boardScale = 1;   // logical unit -> backing-store pixel, as drawn
+
+// Measured off #board-stack rather than the board's own panel: on the phone that
+// panel shrink-wraps the canvas, so measuring it would just measure the answer.
+// The stack's size comes from the flex chain above it, which the board can't
+// influence, so this settles in one pass instead of chasing itself.
+function boardFit() {
+  if (!isMobile) return 1;
+  const stack = document.getElementById('board-stack');
+  const wrap  = document.getElementById('board-wrap');
+  const scs = getComputedStyle(stack);
+  const wcs = getComputedStyle(wrap);
+  const logical = canvasSize() + LABEL;
+  const padW = parseFloat(scs.paddingLeft) + parseFloat(scs.paddingRight)
+             + parseFloat(wcs.paddingLeft) + parseFloat(wcs.paddingRight);
+  const padH = parseFloat(scs.paddingTop) + parseFloat(scs.paddingBottom)
+             + parseFloat(wcs.paddingTop) + parseFloat(wcs.paddingBottom);
+  // Height left over once the rows below the board have taken theirs.
+  let rows = 0, shown = 0;
+  for (const el of stack.children) {
+    const r = el.getBoundingClientRect();
+    if (r.height > 0) shown++;
+    if (el !== wrap) rows += r.height;
+  }
+  const gaps = parseFloat(scs.rowGap || 0) * Math.max(0, shown - 1);
+  const w = stack.clientWidth  - padW;
+  const h = stack.clientHeight - padH - rows - gaps;
+  if (!(w > 0)) return 1;
+  return Math.min(1, w / logical, h > 0 ? h / logical : Infinity);
+}
+
+function sizeBoardCanvas() {
+  const cvs     = document.getElementById('board');
+  const logical = canvasSize() + LABEL;
+  const dpr     = window.devicePixelRatio || 1;
+  cvs.width = cvs.height = Math.max(1, Math.round(logical * boardFit() * dpr));
+  // Derive the CSS box from the rounded backing store rather than the other way
+  // round, so the transform below lands exactly on device pixels.
+  cvs.style.width = cvs.style.height = `${cvs.width / dpr}px`;
+  _boardScale = cvs.width / logical;
+}
+
 function pixelToCell(px, py) {
   const col    = Math.floor(px / STEP);
   const row    = Math.floor(py / STEP);
@@ -419,6 +482,9 @@ function rrect(ctx, x, y, w, h, r) {
 function draw(ctx) {
   const W = canvasSize() + LABEL;
   const H = canvasSize() + LABEL;
+  // setTransform, not scale: draw() is also called from animTick() and the hover
+  // handlers, which never touch cvs.width, so the transform is not reset for us.
+  ctx.setTransform(_boardScale, 0, 0, _boardScale, 0, 0);
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#1e1b18';
   ctx.fillRect(0, 0, W, H);
@@ -728,11 +794,61 @@ function updateSidebar() {
                 + (agentThinking && reportingSide() === 2 ? ' thinking' : '');
   renderThinkProgress();
   renderTimeline();
+  renderMobileTopbar();
+}
+
+// The phone shell keeps the Board and Mode cards in a sheet, so a one-line
+// summary of them sits above the board. Rendered from the same call as the
+// sidebar, so the two can't disagree.
+function renderMobileTopbar() {
+  document.getElementById('m-topbar-variant').textContent = currentBoardVariant.replace('x', '×');
+  document.getElementById('m-topbar-mode').textContent    = MODE_LABELS[gameMode];
+  const loading = MODE_AI_SIDES[gameMode].some(
+    p => sideConfig[p].agentId === 'alphazero' && nnLoading(sideConfig[p].modelPath));
+  document.getElementById('m-topbar-status').textContent =
+      state && state.is_finished ? 'game over'
+    : agentThinking              ? 'thinking…'
+    : loading                    ? 'loading net…'
+    : '';
 }
 
 // ── Input ─────────────────────────────────────────────────────────────────────
+// Touch has no hover, so the wall preview hangs off a long press instead: hold
+// still, the preview appears and then follows the finger, lifting off commits.
+// A plain tap is deliberately left alone so it still turns into a click and
+// moves the pawn — which is why nothing here calls preventDefault() (that would
+// kill the synthetic click), and why #board gets touch-action: none in CSS
+// instead: with no scrolling to fight, the press needs no gesture arbitration.
+const TOUCH_HOLD_MS = 300;   // press this long and it becomes a wall drag
+const TOUCH_SLOP    = 10;    // finger travel (px) before then = not a press
+const TOUCH_LIFT    = 18;    // logical px: aim above the fingertip, not under it
+let _touchHoldTimer = null;
+let _touchOrigin    = null;  // where the press started, for the slop test
+let _touchLast      = null;  // latest position, in {clientX, clientY} form
+let _touchDrag      = false;
+let _suppressClick  = false; // a completed drag must not also read as a tap
+
+function cancelTouchHold() {
+  clearTimeout(_touchHoldTimer);
+  _touchHoldTimer = null;
+  _touchOrigin = _touchLast = null;
+  _touchDrag = false;
+}
+
+function updateTouchWall(canvas) {
+  if (!_touchLast || !state) return;
+  const { px, py } = canvasPos(_touchLast, canvas);
+  const wall     = pixelToWall(px, py - TOUCH_LIFT);
+  const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+  const next     = (wall && hasWalls) ? wall : null;
+  const a = next      ? `${next.orientation}:${next.ax}:${next.ay}`           : null;
+  const b = hoverWall ? `${hoverWall.orientation}:${hoverWall.ax}:${hoverWall.ay}` : null;
+  if (a !== b) { hoverWall = next; draw(canvas.getContext('2d')); }
+}
+
 function setupInput(canvas) {
   canvas.addEventListener('click', e => {
+    if (_suppressClick) { _suppressClick = false; return; }
     if (!state || state.is_finished || agentThinking || isAgentTurn()) return;
     const { px, py } = canvasPos(e, canvas);
     const cell = pixelToCell(px, py);
@@ -791,11 +907,68 @@ function setupInput(canvas) {
       draw(document.getElementById('board').getContext('2d'));
     }
   });
+
+  canvas.addEventListener('touchstart', e => {
+    cancelTouchHold();
+    _suppressClick = false;
+    if (e.touches.length !== 1) return;
+    if (!state || state.is_finished || agentThinking || isAgentTurn()) return;
+    const t = e.touches[0];
+    _touchOrigin = _touchLast = { clientX: t.clientX, clientY: t.clientY };
+    _touchHoldTimer = setTimeout(() => {
+      _touchHoldTimer = null;
+      _touchDrag = true;
+      updateTouchWall(canvas);
+    }, TOUCH_HOLD_MS);
+  }, { passive: true });
+
+  canvas.addEventListener('touchmove', e => {
+    if (!_touchOrigin || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    _touchLast = { clientX: t.clientX, clientY: t.clientY };
+    if (_touchDrag) { updateTouchWall(canvas); return; }
+    const dx = t.clientX - _touchOrigin.clientX;
+    const dy = t.clientY - _touchOrigin.clientY;
+    if (dx * dx + dy * dy > TOUCH_SLOP * TOUCH_SLOP) cancelTouchHold();
+  }, { passive: true });
+
+  canvas.addEventListener('touchend', () => {
+    const dragged = _touchDrag;
+    const wall    = hoverWall;
+    cancelTouchHold();
+    if (!dragged) return;
+    // Swallow the tap this press ends with, but only briefly: on a touch laptop
+    // the next input may be a real mouse click that has nothing to do with it.
+    _suppressClick = true;
+    setTimeout(() => { _suppressClick = false; }, 400);
+    hoverWall = null;
+    if (wall && state && !state.is_finished && !agentThinking && !isAgentTurn()) {
+      const key      = `${wall.orientation}:${wall.ax}:${wall.ay}`;
+      const hasWalls = state.current_player === 1 ? state.walls_p1 > 0 : state.walls_p2 > 0;
+      if (hasWalls && legalWallSet.has(key)) {
+        postMove({ type: 'wall', x: wall.ax, y: wall.ay, orientation: wall.orientation });
+        return;
+      }
+    }
+    draw(canvas.getContext('2d'));   // lifted off nothing placeable: just clear
+  });
+
+  canvas.addEventListener('touchcancel', () => {
+    const dragged = _touchDrag;
+    cancelTouchHold();
+    if (!dragged) return;
+    hoverWall = null;
+    draw(canvas.getContext('2d'));
+  });
 }
 
+// Client coordinates -> logical board units. Takes anything with clientX/clientY,
+// so a Touch works as well as a MouseEvent. The scale comes off the rendered box
+// rather than a stored value, which keeps it right even mid-resize.
 function canvasPos(e, canvas) {
   const rect = canvas.getBoundingClientRect();
-  return { px: e.clientX - rect.left - LABEL, py: e.clientY - rect.top };
+  const s    = rect.width / (canvasSize() + LABEL) || 1;
+  return { px: (e.clientX - rect.left) / s - LABEL, py: (e.clientY - rect.top) / s };
 }
 
 // ── Game actions ──────────────────────────────────────────────────────────────
@@ -955,8 +1128,7 @@ function applyState(s) {
   legalWallSet = computeLegalWallSet();
   hoverWall    = null;
   const cvs    = document.getElementById('board');
-  cvs.width    = canvasSize() + LABEL;
-  cvs.height   = canvasSize() + LABEL;
+  sizeBoardCanvas();
   startMoveAnim(prev, s);
   draw(cvs.getContext('2d'));
   maybeAdvance();
@@ -1117,9 +1289,9 @@ function agentCardHTML(side) {
     </div>
     <div id="sims-row-p${side}" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="font-size:11px;color:var(--muted);flex:1">Simulations</span>
-      <span id="sims-display-p${side}" style="font-size:12px;font-weight:600">100</span>
+      <span id="sims-display-p${side}" style="font-size:12px;font-weight:600">${sideConfig[side].numSims}</span>
     </div>
-    <input id="sims-slider-p${side}" type="range" min="0" max="39" step="1" value="26"
+    <input id="sims-slider-p${side}" type="range" min="0" max="39" step="1" value="${simsToIndex(sideConfig[side].numSims)}"
            style="width:100%;accent-color:#3fb950;cursor:pointer;margin-bottom:8px">
     <div id="temp-row-p${side}">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
@@ -1348,6 +1520,7 @@ function openNNPanel() {
 // exists on a wide enough window; when it doesn't, put the panel under the board
 // rather than off the edge of the screen.
 function positionAnalysisPanel() {
+  if (isMobile) return;   // it's sheet content there — CSS owns the geometry
   const panel = document.getElementById('analysis-panel');
   if (!panel.classList.contains('open')) return;
   // #layout spans the board column only (both side panels are out of flow), so
@@ -1367,6 +1540,7 @@ function repositionPanels() {
 // board column — either of them can hang lower than it. Push the NN panel below
 // the lowest of the three so it can never clip a corner of one.
 function positionNNPanel() {
+  if (isMobile) return;   // ditto
   const panel = document.getElementById('nn-panel');
   if (!panel.classList.contains('open')) return;
   const layout = document.getElementById('layout').getBoundingClientRect();
@@ -1636,6 +1810,12 @@ const SIMS_LEVELS = [
 function simsFromIndex(i) {
   return SIMS_LEVELS[Math.max(0, Math.min(i, SIMS_LEVELS.length - 1))];
 }
+// So the slider's starting notch follows _defaultSideConfig instead of being a
+// second copy of the number.
+function simsToIndex(n) {
+  const i = SIMS_LEVELS.indexOf(n);
+  return i === -1 ? SIMS_LEVELS.indexOf(100) : i;
+}
 
 // Sampling temperature for the visit-count distribution, same convention as
 // Python's MCTSAgent (mcts.py) and tournament_cpp.py's --temp: 0 is argmax,
@@ -1657,10 +1837,96 @@ function delayFromIndex(i) {
 }
 function delayLabel(ms) { return ms === 0 ? 'none' : `${ms / 1000}s`; }
 
+// ── Phone shell ───────────────────────────────────────────────────────────────
+// The phone layout is the same nodes in different places: the cards are MOVED,
+// never copied, so updateSidebar() and friends keep writing to one set of
+// elements and the two layouts can't drift apart. Listed in document order —
+// restoring walks it backwards, so each node's recorded next sibling is already
+// back in place by the time it's needed.
+const SHELL_MOVES = [
+  ['card-board',     'm-sheet-settings'],
+  ['card-players',   'm-players'],
+  ['card-mode',      'm-sheet-settings'],
+  ['agent-card-p1',  'm-sheet-settings'],
+  ['agent-card-p2',  'm-sheet-settings'],
+  ['site-footer',    'm-sheet-settings'],
+  ['nn-panel',       'm-sheet-nn'],
+  ['analysis-panel', 'm-sheet-analysis'],
+];
+const SHEETS = { settings: 'm-sheet-settings', analysis: 'm-sheet-analysis', nn: 'm-sheet-nn' };
+const _shellHomes = new Map();
+let _shellMobile  = null;   // null = shell never applied yet
+
+function closeSheets() {
+  for (const id of Object.values(SHEETS)) document.getElementById(id).classList.remove('open');
+}
+
+// The tab bar drives the same open/close functions as the desktop buttons, so a
+// panel's own `open` class stays the single answer to "is this being kept up to
+// date" — which is what applyState() checks before refreshing it.
+function openTab(name) {
+  closeSheets();
+  document.querySelectorAll('#m-tabbar button').forEach(
+    b => b.classList.toggle('active', b.dataset.tab === name));
+  const nn = document.getElementById('nn-panel');
+  const an = document.getElementById('analysis-panel');
+  if (name !== 'nn'       && nn.classList.contains('open')) nn.classList.remove('open');
+  if (name !== 'analysis' && an.classList.contains('open')) an.classList.remove('open');
+  if (name === 'nn'       && !nn.classList.contains('open')) openNNPanel();
+  if (name === 'analysis' && !an.classList.contains('open')) openAnalysisPanel();
+  if (SHEETS[name]) document.getElementById(SHEETS[name]).classList.add('open');
+}
+
+function applyShell(mobile) {
+  for (const [id] of SHELL_MOVES) {
+    if (_shellHomes.has(id)) continue;
+    const el = document.getElementById(id);
+    _shellHomes.set(id, { parent: el.parentNode, next: el.nextSibling });
+  }
+  if (mobile === _shellMobile) return;
+  _shellMobile = mobile;
+  isMobile     = mobile;
+  document.body.classList.toggle('mobile', mobile);
+
+  const order = mobile ? SHELL_MOVES : [...SHELL_MOVES].reverse();
+  for (const [id, target] of order) {
+    const el = document.getElementById(id);
+    if (mobile) document.getElementById(target).appendChild(el);
+    else {
+      const home = _shellHomes.get(id);
+      home.parent.insertBefore(el, home.next);
+    }
+  }
+
+  if (mobile) openTab('play');
+  else {
+    closeSheets();
+    document.getElementById('nn-panel').classList.remove('open');
+    document.getElementById('analysis-panel').classList.remove('open');
+  }
+}
+
+// Crossing the breakpoint swaps the shell; either way the board has a new box to
+// fit into, and the desktop panels may need repositioning.
+function onViewportChange() {
+  applyShell(MOBILE_MQ.matches);
+  if (state) {
+    sizeBoardCanvas();
+    draw(document.getElementById('board').getContext('2d'));
+  }
+  repositionPanels();
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 const canvas = document.getElementById('board');
 setupInput(canvas);
 buildAgentCards();
+
+// Before initGame(): the first applyState() measures the board's container, so
+// the shell has to be in place by then or the phone gets a desktop-sized board.
+applyShell(MOBILE_MQ.matches);
+document.querySelectorAll('#m-tabbar button').forEach(
+  b => b.addEventListener('click', () => openTab(b.dataset.tab)));
 
 document.querySelectorAll('.board-btn').forEach(btn => {
   btn.addEventListener('click', () => switchBoardVariant(btn.dataset.board));
@@ -1727,7 +1993,9 @@ document.getElementById('btn-analysis').addEventListener('click', () => {
   else openAnalysisPanel();
   repositionPanels();   // this panel's height is part of where the NN panel sits
 });
-window.addEventListener('resize', repositionPanels);
+window.addEventListener('resize', onViewportChange);
+// iOS fires this before the new viewport size has settled, hence the extra frame.
+window.addEventListener('orientationchange', () => requestAnimationFrame(onViewportChange));
 document.getElementById('analysis-sims-slider').addEventListener('input', e => {
   analysisNumSims = simsFromIndex(Number(e.target.value));
   document.getElementById('analysis-sims-display').textContent = analysisNumSims;
@@ -1771,3 +2039,10 @@ updateAgentCardVisibility();
 initAgentList();
 // Start the game
 initGame();
+// The first fit measures a container that still holds the previous canvas size,
+// so re-fit once the layout has settled (fonts, safe-area insets, scrollbars).
+requestAnimationFrame(() => {
+  if (!state) return;
+  sizeBoardCanvas();
+  draw(document.getElementById('board').getContext('2d'));
+});

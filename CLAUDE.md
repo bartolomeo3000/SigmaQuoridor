@@ -194,6 +194,25 @@ knowing before editing it:
   never delay the AI's reply in `hva`/`avh` — the human is waiting on that move.
 - The analysis panel deliberately keeps its **own** worker and `analysisModelPath`, separate from
   the per-side play workers.
+- **Two layouts, one DOM.** Below 900px (`MOBILE_MQ`, matched by the one `@media` block in
+  `app.css`) the page becomes a phone shell: top bar, board, bottom tab bar, and the right rail's
+  cards inside full-screen sheets. `applyShell()` **moves** those nodes (`SHELL_MOVES`, listed in
+  document order; restoring walks it backwards so each recorded `nextSibling` is back in place
+  first) — it never duplicates them, so `updateSidebar()` and everything else keeps writing to one
+  set of elements. Don't add a second copy of a control for mobile. `positionNNPanel()` /
+  `positionAnalysisPanel()` are no-ops while `isMobile`, since CSS owns the sheets' geometry.
+- **The board is drawn in fixed logical units** (`CELL`/`GAP`/`LABEL` → 658px at 9x9) and reconciled
+  with the screen by a single scale: `sizeBoardCanvas()` sets the backing store to
+  `logical * fit * dpr`, `draw()` opens with the matching `setTransform` (absolute, because
+  `animTick()` and the hover handlers redraw without resetting `cvs.width`), and `canvasPos()`
+  divides by the scale it reads back off the rendered box. So no drawing or hit-testing code knows
+  the board can be smaller than it thinks. `boardFit()` measures `#board-stack`, not the board's own
+  panel, which shrink-wraps the canvas — measuring that would measure the answer. Desktop is pinned
+  to `fit = 1`.
+- **Walls on touch are a long press** (`TOUCH_HOLD_MS`), previewed `TOUCH_LIFT` logical px above the
+  fingertip so the finger doesn't cover it, committed on `touchend`. Nothing in that path calls
+  `preventDefault()` — that would kill the synthetic `click` a tap needs to move a pawn; `#board`
+  gets `touch-action: none` in CSS instead.
 
 ## Working notes
 

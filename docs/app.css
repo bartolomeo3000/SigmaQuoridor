@@ -383,3 +383,146 @@ input:focus-visible {
 #site-footer p { margin-top: 5px; }
 #site-footer a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border); }
 #site-footer a:hover { color: #fff; border-bottom-color: var(--muted); }
+
+/* ── Phone shell ──
+   The desktop layout cannot be squeezed: the 9x9 board alone is
+   9*72-10+20 = 658 logical px, and #sidebar hangs off the board's right edge at
+   left: calc(100% + 32px). So below the breakpoint the page becomes a fixed
+   three-row column (top bar / board / tab bar), the board scales to fit
+   (boardFit in app.js) and everything from the right rail moves into sheets.
+   These four selectors are the shell; they stay out of the way until then. */
+#m-topbar, #m-players, #m-tabbar, .m-sheet { display: none; }
+
+@media (max-width: 900px) {
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    padding: 0;
+    height: 100vh;
+    height: 100dvh;   /* the game view must not resize when Safari's bar hides */
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: none;   /* no pull-to-refresh while dragging a wall */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #m-topbar {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 10px;
+    padding: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  #m-topbar-variant { font-weight: 700; color: var(--text); }
+  #m-topbar-mode { flex: 1; }
+  #m-topbar-status { font-size: 11px; }
+
+  /* #layout is only a positioning anchor for the side panels on desktop; here
+     it is just the middle row that the board gets to fill. */
+  #layout { flex: 1 1 auto; min-height: 0; display: flex; }
+  #sidebar { display: none; }
+  /* min-width: 0 because this one IS a row-flex item: without it its automatic
+     minimum is the 658px canvas and the column can't narrow past it. */
+  #board-col { flex: 1 1 auto; min-width: 0; min-height: 0; width: 100%; gap: 8px; }
+  /* A square board on a narrow screen is width-bound, so there is spare height
+     no matter what. Rather than ring the board with it, it all goes into one gap
+     (see #timeline-row below): board and players on top, controls on the bottom
+     edge where a thumb reaches them. */
+  #board-stack {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    gap: 8px;
+    padding: 8px;
+    justify-content: flex-start;
+  }
+
+  /* Hugs the board instead of filling the column, so the panel doesn't show a
+     field of empty felt above and below it. boardFit() measures #board-stack. */
+  #board-wrap {
+    flex: 0 0 auto;
+    align-self: center;
+    padding: 8px;
+    border-radius: 10px;
+  }
+  /* The play view does not scroll, so the board can own every gesture — no
+     competing scroll to cancel when a long press starts. */
+  #board { touch-action: none; }
+
+  /* The spare height a width-bound board leaves over goes into touch targets
+     rather than padding — every row here is something you tap. */
+  #m-players { display: flex; }
+  #m-players .card { flex: 1; padding: 10px 12px; }
+  #m-players .card-label { display: none; }   /* two pawn rows need no heading */
+  #m-players .player-entry { padding: 11px 10px; }
+
+  #timeline-row { padding: 8px 10px; gap: 8px; margin-top: auto; }   /* takes the slack */
+  #timeline-row button { padding: 11px 14px; }
+  #timeline-slider { height: 28px; }
+  #timeline-label { min-width: 0; font-size: 10px; }
+  #board-actions button { padding: 14px 8px; font-size: 13px; }
+  /* These two are tabs down in the bar instead. */
+  #btn-nn, #btn-analysis { display: none; }
+
+  #m-tabbar {
+    display: flex;
+    flex: 0 0 auto;
+    position: relative;   /* so z-index applies and it stays above the sheets */
+    z-index: 60;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  #m-tabbar button {
+    flex: 1 1 0;
+    border: 0;
+    border-radius: 0;
+    padding: 12px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    touch-action: manipulation;   /* no double-tap-to-zoom delay */
+  }
+  #m-tabbar button:hover { background: transparent; }
+  #m-tabbar button.active { color: var(--text); box-shadow: inset 0 2px 0 var(--text); }
+
+  .m-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--bg);
+    padding: calc(env(safe-area-inset-top) + 14px) 14px
+             calc(env(safe-area-inset-bottom) + 76px);   /* clear the tab bar */
+  }
+  .m-sheet.open { display: flex; flex-direction: column; gap: 12px; }
+
+  /* Both side panels stop being panels and become plain sheet content. Their
+     own `open` class still gates visibility, which is also what tells
+     applyState() whether to keep refreshing them. */
+  #analysis-panel, #nn-panel {
+    position: static;
+    transform: none;
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+  }
+  #analysis-panel.stacked { left: auto; right: auto; top: auto; }
+  .nn-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  /* renderChannel() writes a desktop pixel size inline (252px at 9x9), which two
+     columns of a 390px screen can't take. Only !important beats an inline style;
+     the backing store is already dpr-scaled, so downscaling it stays sharp. */
+  .nn-channel canvas { width: 100% !important; height: auto !important; }
+  .move-bar-row { grid-template-columns: 56px 1fr 46px; }
+  .move-bar-list { max-height: none; }
+}
