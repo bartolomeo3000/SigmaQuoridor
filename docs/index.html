@@ -1,13 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <meta charset="UTF-8">
   <!-- Injects COOP/COEP headers via Service Worker on hosts that don't set
        them (e.g. GitHub Pages). Required for SharedArrayBuffer / ORT WASM.
        On local dev serve.py already sets the headers, so the SW is a no-op. -->
   <script src="coi-serviceworker.js"></script>
-  <meta charset="UTF-8">
-  <title>SigmaQuoridor</title>
+  <title>SigmaQuoridor &mdash; play Quoridor against an AlphaZero-style AI</title>
+  <meta name="description" content="Play Quoridor in your browser against a neural network trained from zero knowledge by self-play — no human games, no heuristics, no install. Runs client-side via ONNX.">
+  <link rel="canonical" href="https://bartolomeo3000.github.io/SigmaQuoridor/">
+  <meta name="theme-color" content="#111111">
+  <!-- Google Search Console ownership check — re-verified periodically, don't remove. -->
+  <meta name="google-site-verification" content="fcAcd6Izs4sqMI6vfJfUQRFe7t8qUSYIWtVxcm-C9XA">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%97%BF</text></svg>">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SigmaQuoridor">
+  <meta property="og:url" content="https://bartolomeo3000.github.io/SigmaQuoridor/">
+  <meta property="og:title" content="SigmaQuoridor — play Quoridor against an AlphaZero-style AI">
+  <meta property="og:description" content="A Quoridor engine trained from zero knowledge by self-play. Play it in your browser; the network runs on your own CPU.">
+  <meta property="og:image" content="https://bartolomeo3000.github.io/SigmaQuoridor/screenshots/board.png">
+  <meta property="og:image:alt" content="A 9x9 Quoridor game in progress against SigmaQuoridor.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://bartolomeo3000.github.io/SigmaQuoridor/screenshots/board.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "SigmaQuoridor",
+    "url": "https://bartolomeo3000.github.io/SigmaQuoridor/",
+    "description": "An AlphaZero-style Quoridor engine trained from zero knowledge by self-play, playable in the browser with the network running client-side via ONNX.",
+    "applicationCategory": "GameApplication",
+    "operatingSystem": "Any",
+    "browserRequirements": "Requires JavaScript and WebAssembly",
+    "isAccessibleForFree": true,
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "codeRepository": "https://github.com/bartolomeo3000/SigmaQuoridor",
+    "license": "https://opensource.org/licenses/MIT",
+    "screenshot": "https://bartolomeo3000.github.io/SigmaQuoridor/screenshots/board.png",
+    "author": {
+      "@type": "Person",
+      "name": "Bartosz Pokora",
+      "url": "https://github.com/bartolomeo3000"
+    },
+    "about": {
+      "@type": "Game",
+      "name": "Quoridor",
+      "sameAs": "https://en.wikipedia.org/wiki/Quoridor"
+    }
+  }
+  </script>
   <style>
     :root {
       --bg:      #111111;
@@ -388,9 +431,25 @@
     /* while running, the progress bar below shows activity, so just dim the
        button rather than also pulsing it */
     #btn-run-mcts.running { opacity: 0.55; pointer-events: none; }
+
+    #site-footer { padding: 2px 4px 0; font-size: 11px; line-height: 1.55; color: var(--muted); }
+    #site-footer h1 { font-size: 13px; font-weight: 600; color: var(--text); }
+    #site-footer p { margin-top: 5px; }
+    #site-footer a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border); }
+    #site-footer a:hover { color: #fff; border-bottom-color: var(--muted); }
   </style>
 </head>
 <body>
+
+<noscript>
+  <p style="max-width:52ch;color:var(--text);font-size:14px;line-height:1.6">
+    <strong>SigmaQuoridor</strong> is an AlphaZero-style engine for the board game
+    Quoridor, trained from zero knowledge by self-play. Playing it here needs
+    JavaScript and WebAssembly &mdash; the neural network runs on your own machine.
+    Training code, results and rules:
+    <a href="https://github.com/bartolomeo3000/SigmaQuoridor" style="color:var(--text)">github.com/bartolomeo3000/SigmaQuoridor</a>.
+  </p>
+</noscript>
 
 <div id="layout">
 
@@ -444,6 +503,18 @@
        so the two sides' controls can't drift apart. -->
   <div class="card" id="agent-card-p1" style="display:none"></div>
   <div class="card" id="agent-card-p2" style="display:none"></div>
+
+  <!-- The page's only static text, and the link back to the repo. -->
+  <div id="site-footer">
+    <h1>SigmaQuoridor</h1>
+    <p>A Quoridor engine trained from zero knowledge by self-play &mdash; no human
+       games, no heuristics. The network runs in your browser.</p>
+    <p>
+      <a href="https://github.com/bartolomeo3000/SigmaQuoridor" target="_blank" rel="noopener">Source on GitHub</a>
+      &middot;
+      <a href="https://github.com/bartolomeo3000/SigmaQuoridor/blob/main/RULES.md" target="_blank" rel="noopener">Rules of Quoridor</a>
+    </p>
+  </div>
 
 </div>
 
