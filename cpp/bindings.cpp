@@ -204,7 +204,9 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                          int solver_max_total_walls, long long solver_node_limit,
                          double solver_time_limit_s,
                          int mcts_solver_max_total_walls, long long mcts_solver_node_limit,
-                         double mcts_solver_time_limit_s) {
+                         double mcts_solver_time_limit_s,
+                         double pcr_full_prob, int pcr_cheap_sims,
+                         bool pcr_cheap_noise) {
                  Config cfg;
                  cfg.boardsize       = boardsize;
                  cfg.walls           = walls;
@@ -234,6 +236,9 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  cfg.mcts_solver_max_total_walls = mcts_solver_max_total_walls;
                  cfg.mcts_solver_node_limit      = mcts_solver_node_limit;
                  cfg.mcts_solver_time_limit_s    = mcts_solver_time_limit_s;
+                 cfg.pcr_full_prob   = pcr_full_prob;
+                 cfg.pcr_cheap_sims  = pcr_cheap_sims;
+                 cfg.pcr_cheap_noise = pcr_cheap_noise;
                  return new SelfPlayManager(cfg, num_threads, parallel_games);
              }),
              py::arg("boardsize") = 7, py::arg("walls") = 5,
@@ -252,7 +257,10 @@ PYBIND11_MODULE(quoridor_cpp, m) {
              py::arg("solver_time_limit_s") = 4.0,
              py::arg("mcts_solver_max_total_walls") = 0,
              py::arg("mcts_solver_node_limit") = 20'000,
-             py::arg("mcts_solver_time_limit_s") = 0.02)
+             py::arg("mcts_solver_time_limit_s") = 0.02,
+             py::arg("pcr_full_prob") = 1.0,
+             py::arg("pcr_cheap_sims") = 100,
+             py::arg("pcr_cheap_noise") = false)
         .def("start", &SelfPlayManager::start, py::arg("total_games"),
              "Spawn worker threads and begin playing total_games games.")
         .def("stop", &SelfPlayManager::stop)
@@ -362,6 +370,8 @@ PYBIND11_MODULE(quoridor_cpp, m) {
                  d["mcts_solver_calls"] = s.mcts_solver_calls;
                  d["mcts_solver_timeouts"] = s.mcts_solver_timeouts;
                  d["mcts_solver_hits"] = s.mcts_solver_hits;
+                 d["pcr_full_turns"] = s.pcr_full_turns;
+                 d["pcr_cheap_turns"] = s.pcr_cheap_turns;
                  return d;
              });
 

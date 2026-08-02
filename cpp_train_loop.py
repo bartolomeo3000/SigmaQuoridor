@@ -67,6 +67,10 @@ def main() -> None:
     p.add_argument("--mcts-solver-max-total-walls", type=int, default=0)
     p.add_argument("--mcts-solver-node-limit", type=int, default=20_000)
     p.add_argument("--mcts-solver-time-limit-s", type=float, default=0.02)
+    # Playout cap randomization; see selfplay_cpp.py for the full explanation.
+    p.add_argument("--pcr-full-prob", type=float, default=1.0)
+    p.add_argument("--pcr-cheap-sims", type=int, default=100)
+    p.add_argument("--pcr-cheap-noise", action="store_true")
     p.add_argument("--abandon-stragglers-below", type=int, default=48,
                    help="forwarded to selfplay_cpp.py --abandon-stragglers-below "
                         "(stop and discard the last few in-flight games instead "
@@ -150,9 +154,13 @@ def main() -> None:
             "--mcts-solver-max-total-walls", str(args.mcts_solver_max_total_walls),
             "--mcts-solver-node-limit", str(args.mcts_solver_node_limit),
             "--mcts-solver-time-limit-s", str(args.mcts_solver_time_limit_s),
+            "--pcr-full-prob", str(args.pcr_full_prob),
+            "--pcr-cheap-sims", str(args.pcr_cheap_sims),
             "--abandon-stragglers-below", str(args.abandon_stragglers_below),
             "--seed", str(args.seed + cycle),
         ]
+        if args.pcr_cheap_noise:
+            selfplay_cmd.append("--pcr-cheap-noise")
         if args.bf16:
             selfplay_cmd.append("--bf16")
         if args.compile:

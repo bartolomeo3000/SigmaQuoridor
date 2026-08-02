@@ -161,6 +161,27 @@ def main() -> None:
                    help="safety cap on wall-clock seconds for in-tree MCTS leaf "
                         "solves; a timed-out attempt falls back to a normal NN "
                         "eval leaf for that node")
+    p.add_argument("--pcr-full-prob", type=float, default=1.0,
+                   help="playout cap randomization (KataGo): probability that a "
+                        "turn is a FULL turn (--sims simulations, Dirichlet "
+                        "noise, position recorded as training data). The rest "
+                        "are CHEAP turns (--pcr-cheap-sims, no noise, NOT "
+                        "recorded) that exist only to finish the game. Trades "
+                        "correlated policy samples for more finished games per "
+                        "unit compute, which is what the value head learns from "
+                        "(every position in a game shares one value target). "
+                        "1.0 disables it (KataGo used 0.25)")
+    p.add_argument("--pcr-cheap-sims", type=int, default=100,
+                   help="simulations on cheap turns; only used when "
+                        "--pcr-full-prob < 1. Must stay high enough that the "
+                        "game is still played well: weak unrecorded moves make "
+                        "the game outcome a bad value target for the positions "
+                        "that WERE recorded (KataGo used 100, annealing to 200 "
+                        "against 600->1000 full)")
+    p.add_argument("--pcr-cheap-noise", action="store_true",
+                   help="also apply Dirichlet root noise on cheap turns "
+                        "(off by default: cheap turns should play accurately, "
+                        "not explore)")
     p.add_argument("--abandon-stragglers-below", type=int, default=48,
                    help="once fewer than this many games remain unfinished, stop "
                         "immediately and discard them instead of waiting for the "
@@ -213,6 +234,9 @@ def main() -> None:
         mcts_solver_max_total_walls=args.mcts_solver_max_total_walls,
         mcts_solver_node_limit=args.mcts_solver_node_limit,
         mcts_solver_time_limit_s=args.mcts_solver_time_limit_s,
+        pcr_full_prob=args.pcr_full_prob,
+        pcr_cheap_sims=args.pcr_cheap_sims,
+        pcr_cheap_noise=args.pcr_cheap_noise,
     )
     mgr.start(args.games)
 
@@ -283,6 +307,13 @@ def main() -> None:
     print(f"  mcts leaf-solver: {stats['mcts_solver_calls']} calls, "
           f"{stats['mcts_solver_timeouts']} timeouts, "
           f"{stats['mcts_solver_hits']} hits")
+    if args.pcr_full_prob < 1.0:
+        full, cheap = stats["pcr_full_turns"], stats["pcr_cheap_turns"]
+        turns = full + cheap
+        print(f"  pcr: {full} full / {cheap} cheap turns "
+              f"({full / max(turns, 1):.1%} full, target {args.pcr_full_prob:.0%})"
+              f"  sims spent {full * args.sims + cheap * args.pcr_cheap_sims:,}"
+              f" vs {turns * args.sims:,} without pcr")
     print(f"  positions {len(values)}  evals {n_evals} "
           f"({n_evals / elapsed:.0f}/s, mean batch {n_evals / max(n_batches, 1):.1f})")
 

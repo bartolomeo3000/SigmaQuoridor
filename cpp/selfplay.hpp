@@ -119,6 +119,31 @@ struct Config {
     int mcts_solver_max_total_walls  = 0;
     long long mcts_solver_node_limit = 20'000;
     double mcts_solver_time_limit_s  = 0.02;
+
+    // Playout cap randomization (KataGo, arXiv:1902.10565 §3.1). Each turn is
+    // independently drawn as FULL (probability pcr_full_prob, num_simulations
+    // sims, Dirichlet noise, position recorded as training data) or CHEAP
+    // (pcr_cheap_sims sims, no noise by default, NOT recorded).
+    //
+    // The point is not raw throughput -- cheap turns actually cost MORE
+    // playouts per recorded sample. It is that every position in one game
+    // shares the same value target (the game outcome), so a game yields one
+    // independent value observation no matter how many of its positions are
+    // recorded. Cheap turns buy more finished games per unit compute, which
+    // is what the value head actually learns from, while the policy targets
+    // that are kept stay at full strength rather than being diluted.
+    //
+    // Cheap turns must still be played WELL (hence sims, not raw policy):
+    // if the unrecorded moves are weak the game outcome stops reflecting the
+    // true value of the positions that were recorded, poisoning their value
+    // targets. KataGo used (full, cheap) = (600, 100) annealing to
+    // (1000, 200), p = 0.25.
+    //
+    // pcr_full_prob = 1.0 disables the feature (every turn full = the
+    // pre-PCR behaviour, bit-for-bit). Never applied when training=false.
+    double pcr_full_prob   = 1.0;
+    int    pcr_cheap_sims  = 100;
+    bool   pcr_cheap_noise = false;  // Dirichlet noise on cheap turns too
 };
 
 // ---------------------------------------------------------------------------
@@ -232,6 +257,8 @@ struct Game {
     std::vector<Node> arena;                     // per-move search tree
     int32_t root = -1;
     int sims_done = 0;
+    int sims_target = 0;                         // this turn's budget (see PCR)
+    bool full_turn = true;                       // record + noise this turn?
 
     std::vector<PendingLeaf> pending;
     std::unordered_map<int32_t, int> pending_by_node;
@@ -241,11 +268,16 @@ struct Game {
     float w_p1 = 0.0f, w_p2 = 0.0f;              // dist-bonus weights per side
     float w_cur = 0.0f;                          // weight for the player at root
 
-    // Recorded trajectory (values assigned at game end).
+    // Recorded trajectory (values assigned at game end). Under PCR only a
+    // subset of turns is recorded, so `plies` (recorded rows) and
+    // `real_plies` (actual game length) diverge; rec_ply[i] is the real ply
+    // index of recorded row i, which is what makes plies_to_end truthful.
     std::vector<float> rec_planes;               // plies * 8*N*N
     std::vector<float> rec_policy;               // plies * A
     std::vector<int8_t> rec_player;
+    std::vector<int32_t> rec_ply;
     int plies = 0;
+    int real_plies = 0;
 
     // Diagnostic only: post-move Zobrist hash for the first few real plies,
     // used to measure cross-game transposition overlap (see get_openings()).
@@ -260,6 +292,8 @@ struct Game {
         arena.clear();
         root = -1;
         sims_done = 0;
+        sims_target = cfg.num_simulations;
+        full_turn = true;
         pending.clear();
         pending_by_node.clear();
         results_missing = 0;
@@ -274,7 +308,9 @@ struct Game {
         rec_planes.clear();
         rec_policy.clear();
         rec_player.clear();
+        rec_ply.clear();
         plies = 0;
+        real_plies = 0;
         n_opening = 0;
         RepCounter rc{&history, nullptr};
         state.gen_legal(rc, root_legal);
@@ -442,11 +478,18 @@ public:
         long long solver_calls = 0, solver_timeouts = 0, solver_positions = 0;
         // In-tree MCTS leaf-solver diagnostics.
         long long mcts_solver_calls = 0, mcts_solver_timeouts = 0, mcts_solver_hits = 0;
+        // Playout cap randomization: turns drawn full (recorded) vs cheap.
+        long long pcr_full_turns = 0, pcr_cheap_turns = 0;
     };
 
     Stats stats() const {
         std::lock_guard<std::mutex> lk(data_mu_);
-        return stats_;
+        Stats s = stats_;
+        // Kept outside stats_ (and off data_mu_) because they tick once per
+        // MOVE rather than once per game -- see begin_turn().
+        s.pcr_full_turns  = pcr_full_.load(std::memory_order_relaxed);
+        s.pcr_cheap_turns = pcr_cheap_.load(std::memory_order_relaxed);
+        return s;
     }
 
     const Config& config() const { return cfg_; }
@@ -492,11 +535,12 @@ private:
                     if (finish_game_and_maybe_reset(g, g.state.winner())) return;
                     continue;
                 }
+                begin_turn(g);
                 if (submit_root(gi, g)) return;   // queued a real eval; wait
                 continue;                          // resolved from cache; keep going
             }
 
-            if (g.sims_done < cfg_.num_simulations) {
+            if (g.sims_done < g.sims_target) {
                 gather(g);
                 if (!g.pending.empty()) {
                     // NOTE: once submit_pending has queued refs, ownership of
@@ -528,6 +572,23 @@ private:
         }
     }
 
+    // Draw this turn's playout budget (KataGo playout cap randomization).
+    // Runs once per real move, before the root is submitted, so every
+    // consumer of sims_target/full_turn downstream sees a settled decision.
+    void begin_turn(Game& g) {
+        if (!cfg_.training || cfg_.pcr_full_prob >= 1.0) {
+            g.full_turn = true;
+            g.sims_target = cfg_.num_simulations;
+            return;
+        }
+        std::uniform_real_distribution<double> u(0.0, 1.0);
+        g.full_turn = u(g.rng) < cfg_.pcr_full_prob;
+        g.sims_target = g.full_turn ? cfg_.num_simulations
+                                    : std::max(1, cfg_.pcr_cheap_sims);
+        (g.full_turn ? pcr_full_ : pcr_cheap_).fetch_add(
+            1, std::memory_order_relaxed);
+    }
+
     // Attempts an exact alpha-beta solve of g.state and, on success (not
     // timed out), records the ENTIRE rest of the game as training data in
     // one shot: one-hot policy targets along the solved (fastest-win/
@@ -550,21 +611,36 @@ private:
 
         const int A = action_space(cfg_.boardsize);
         const int NN = cfg_.boardsize * cfg_.boardsize;
+        // Solved PV rows are subsampled at the same rate as searched turns.
+        // They are exact and cost no search, so keeping all of them is
+        // tempting -- but they are also perfectly outcome-correlated with
+        // each other (same argument that motivates PCR), and recording 100%
+        // of the endgame while recording pcr_full_prob of the midgame would
+        // skew the data toward endgames purely as a side effect of enabling
+        // PCR, confounding any A/B against a non-PCR run.
+        const bool subsample = cfg_.training && cfg_.pcr_full_prob < 1.0;
+        std::uniform_real_distribution<double> u(0.0, 1.0);
+        long long recorded = 0;
         for (auto& step : pv) {
             const GameState& state_before = step.first;
             const uint16_t action = step.second;
 
-            const size_t sp = g.rec_planes.size();
-            g.rec_planes.resize(sp + 8 * NN);
-            state_before.nn_input(g.rec_planes.data() + sp);
-            const size_t pp = g.rec_policy.size();
-            g.rec_policy.resize(pp + A, 0.0f);
-            // One-hot solver target in the current player's canonical frame.
-            const int ridx = state_before.is_p1_turn()
-                           ? int(action) : vflip_action(action, cfg_.boardsize);
-            g.rec_policy[pp + ridx] = 1.0f;
-            g.rec_player.push_back(int8_t(state_before.current_player()));
-            ++g.plies;
+            if (!subsample || u(g.rng) < cfg_.pcr_full_prob) {
+                const size_t sp = g.rec_planes.size();
+                g.rec_planes.resize(sp + 8 * NN);
+                state_before.nn_input(g.rec_planes.data() + sp);
+                const size_t pp = g.rec_policy.size();
+                g.rec_policy.resize(pp + A, 0.0f);
+                // One-hot solver target in the current player's canonical frame.
+                const int ridx = state_before.is_p1_turn()
+                               ? int(action) : vflip_action(action, cfg_.boardsize);
+                g.rec_policy[pp + ridx] = 1.0f;
+                g.rec_player.push_back(int8_t(state_before.current_player()));
+                g.rec_ply.push_back(g.real_plies);
+                ++g.plies;
+                ++recorded;
+            }
+            ++g.real_plies;
 
             g.state.apply(action);
             ++g.history[g.state.zhash];
@@ -573,7 +649,7 @@ private:
         }
         {
             std::lock_guard<std::mutex> lk(data_mu_);
-            stats_.solver_positions += (long long)pv.size();
+            stats_.solver_positions += recorded;
         }
         return true;
     }
@@ -642,8 +718,7 @@ private:
 
     // Collect up to leaf_batch traversals; unresolved leaves go to g.pending.
     void gather(Game& g) {
-        const int b = std::min(cfg_.leaf_batch,
-                               cfg_.num_simulations - g.sims_done);
+        const int b = std::min(cfg_.leaf_batch, g.sims_target - g.sims_done);
         std::vector<int32_t> path;
         std::vector<uint64_t> overlay;
         std::vector<uint16_t> legal;
@@ -861,7 +936,11 @@ private:
             }
 
             if (p.is_root) {
-                if (cfg_.training && cfg_.dirichlet_eps > 0.0) {
+                // Cheap PCR turns skip exploration noise by default: their
+                // job is to advance the game accurately so the outcome stays
+                // a valid value target, not to explore.
+                if (cfg_.training && cfg_.dirichlet_eps > 0.0
+                    && (g.full_turn || cfg_.pcr_cheap_noise)) {
                     Node& r = g.arena[ni];
                     std::gamma_distribution<double> gd(cfg_.dirichlet_alpha, 1.0);
                     std::vector<double> noise(r.nchild);
@@ -972,22 +1051,28 @@ private:
             for (int k = 0; k < nc; ++k) probs[k] = 1.0 / nc;
         }
 
-        // Record training example (values assigned at game end).
-        const size_t sp = g.rec_planes.size();
-        g.rec_planes.resize(sp + 8 * NN);
-        g.state.nn_input(g.rec_planes.data() + sp);
-        const size_t pp = g.rec_policy.size();
-        g.rec_policy.resize(pp + A, 0.0f);
-        // Record the policy target in the current player's canonical frame
-        // (matches the canonical nn_input above): flip action indices for P2.
-        const bool flip = !g.state.is_p1_turn();
-        for (int k = 0; k < nc; ++k) {
-            const uint16_t a = g.arena[r.first_child + k].action;
-            const int ridx = flip ? vflip_action(a, cfg_.boardsize) : int(a);
-            g.rec_policy[pp + ridx] = float(probs[k]);
+        // Record training example (values assigned at game end). Cheap PCR
+        // turns are searched and played but never recorded -- they exist to
+        // finish the game, not to train on.
+        if (g.full_turn) {
+            const size_t sp = g.rec_planes.size();
+            g.rec_planes.resize(sp + 8 * NN);
+            g.state.nn_input(g.rec_planes.data() + sp);
+            const size_t pp = g.rec_policy.size();
+            g.rec_policy.resize(pp + A, 0.0f);
+            // Record the policy target in the current player's canonical frame
+            // (matches the canonical nn_input above): flip action indices for P2.
+            const bool flip = !g.state.is_p1_turn();
+            for (int k = 0; k < nc; ++k) {
+                const uint16_t a = g.arena[r.first_child + k].action;
+                const int ridx = flip ? vflip_action(a, cfg_.boardsize) : int(a);
+                g.rec_policy[pp + ridx] = float(probs[k]);
+            }
+            g.rec_player.push_back(int8_t(g.state.current_player()));
+            g.rec_ply.push_back(g.real_plies);
+            ++g.plies;
         }
-        g.rec_player.push_back(int8_t(g.state.current_player()));
-        ++g.plies;
+        ++g.real_plies;
 
         // Move selection: KataGo-style decaying temperature. Sample with
         // probability proportional to (visits/max_visits)^(1/tau); moves
@@ -1043,9 +1128,10 @@ private:
             float v = 0.0f;
             if (winner != 0) v = (g.rec_player[i] == winner) ? 1.0f : -1.0f;
             out_values_.push_back(v);
-            // Plies remaining (including this move) until the terminal state;
-            // last recorded position (i == plies-1) is 1 ply from terminal.
-            out_plies_to_end_.push_back(float(g.plies - i));
+            // Plies remaining (including this move) until the terminal state,
+            // measured in REAL game plies -- under PCR the recorded rows are
+            // sparse, so this is not simply (plies - i).
+            out_plies_to_end_.push_back(float(g.real_plies - g.rec_ply[i]));
         }
         (void)A; (void)NN;
 
@@ -1053,10 +1139,12 @@ private:
         if (winner == 1) ++stats_.p1_wins;
         else if (winner == 2) ++stats_.p2_wins;
         else ++stats_.draws;
-        stats_.total_plies += g.plies;
+        // Ply stats describe the GAME, so they track real_plies; recorded
+        // rows are counted separately by positions.
+        stats_.total_plies += g.real_plies;
         stats_.total_walls += walls_placed;
-        stats_.min_plies = std::min(stats_.min_plies, g.plies);
-        stats_.max_plies = std::max(stats_.max_plies, g.plies);
+        stats_.min_plies = std::min(stats_.min_plies, g.real_plies);
+        stats_.max_plies = std::max(stats_.max_plies, g.real_plies);
 
         out_openings_.push_back(g.opening_hashes);
         out_opening_lens_.push_back(g.n_opening);
@@ -1083,6 +1171,10 @@ private:
     mutable std::mutex data_mu_;
     std::vector<float> out_states_, out_policies_, out_values_, out_plies_to_end_;
     Stats stats_;
+
+    // Per-MOVE counters, kept off data_mu_ to avoid per-move lock traffic
+    // across the worker pool; folded into the Stats copy by stats().
+    std::atomic<long long> pcr_full_{0}, pcr_cheap_{0};
 
     // Diagnostic only (see get_openings()).
     std::vector<std::array<uint64_t, Game::kOpeningTrack>> out_openings_;
