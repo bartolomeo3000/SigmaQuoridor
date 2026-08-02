@@ -42,9 +42,10 @@ python setup_cpp.py build_ext --inplace
 Produces `quoridor_cpp*.pyd`/`.so` from `cpp/bindings.cpp` (pybind11, C++17). `-O3` is used on
 non-Windows; MSVC gets `/O2` (MSVC doesn't understand `-O3`).
 
-**Build gotcha:** `build_ext --inplace` does not reliably detect header-only changes in
-`engine.hpp`/`selfplay.hpp`. After editing any `cpp/*.hpp`, delete `build/` and the compiled
-extension before rebuilding, or you'll silently test stale code:
+Header-only changes do trigger a rebuild: `setup_cpp.py` lists every `cpp/*.hpp` in the
+extension's `depends`, which is what setuptools stats alongside `bindings.cpp`. **A new header
+must be added to that list**, or edits to it will silently leave you testing stale code. If you
+ever suspect a stale build anyway:
 
 ```bash
 rm -rf build && rm -f quoridor_cpp*.pyd quoridor_cpp*.so

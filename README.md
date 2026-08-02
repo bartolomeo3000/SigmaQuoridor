@@ -311,9 +311,9 @@ Then confirm the GPU is actually being used:
 
 - **Run every command from the repo root.** All artifact paths are relative to the working
   directory.
-- **After editing any `cpp/*.hpp`, delete `build/` and the compiled extension before
-  rebuilding.** `build_ext --inplace` does not reliably notice header-only changes, and you will
-  silently keep testing the old engine:
+- **If you add a new `cpp/*.hpp`, list it in `setup_cpp.py`'s `depends`.** That list is how
+  `build_ext --inplace` notices header-only changes; a header missing from it won't trigger a
+  rebuild and you'll silently keep testing the old engine. To force a clean build:
   ```bash
   rm -rf build && rm -f quoridor_cpp*.pyd quoridor_cpp*.so
   .venv/Scripts/python setup_cpp.py build_ext --inplace
@@ -561,8 +561,8 @@ script there needs `import _bootstrap` before importing project modules.
 - **Run everything from the repo root.** Paths are relative to the working directory.
 - **`best.pt` means "latest", not "best".** There is no promotion gate; every cycle overwrites it.
   Confirm with a tournament before trusting or deploying a checkpoint.
-- **Rebuild properly after touching `cpp/*.hpp`** — delete `build/` and the extension first, or
-  you'll test stale code (see [Setup](#setup)).
+- **A new `cpp/*.hpp` has to go into `setup_cpp.py`'s `depends`** — otherwise editing it won't
+  rebuild the extension and you'll test stale code (see [Setup](#setup)).
 - **Model and data directories are paired.** Point a script at a mismatched pair and it trains on
   the wrong buffer instead of erroring.
 - **Falling loss ≠ a stronger engine.** Losses are in-sample on a moving buffer. Only head-to-head

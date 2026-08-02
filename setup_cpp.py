@@ -28,6 +28,15 @@ setup(
         Pybind11Extension(
             "quoridor_cpp",
             ["cpp/bindings.cpp"],
+            # Without this, setuptools only stats bindings.cpp and skips the
+            # rebuild when a header-only change is all that happened.
+            depends=[
+                "cpp/engine.hpp",
+                "cpp/selfplay.hpp",
+                "cpp/tournament.hpp",
+                "cpp/alphabeta.hpp",
+                "cpp/rollout_mcts.hpp",
+            ],
             cxx_std=17,
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
