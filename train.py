@@ -98,7 +98,13 @@ RANDOM_WALL_PLIES = 1      # walls placed per player in pre-filled games
 RANDOM_WALL_FRACTION = 0.05  # fraction of games to apply random wall pre-fill to
 
 # Replay buffer
-BUFFER_CYCLES = 30         # keep positions from this many recent cycles
+# 60, not 30, because playout cap randomization records ~4x fewer positions per
+# cycle (1.93M vs 8.47M in a 30-cycle buffer), which pushed the fraction of the
+# buffer resampled per cycle from 12% to 53%. 60 halves that back to ~27% and
+# matches the ~3h of training history a 30-cycle control buffer spanned, while
+# costing little throughput (train ~55s -> ~67s). UNVALIDATED — this value is
+# under test on the playout-cap-randomization branch; main still uses 30.
+BUFFER_CYCLES = 60         # keep positions from this many recent cycles
 
 # Training
 BATCH_SIZE                 = 1024   # was 256; GPU has headroom, and BatchNorm/value-target
