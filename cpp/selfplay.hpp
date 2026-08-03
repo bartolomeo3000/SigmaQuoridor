@@ -141,8 +141,15 @@ struct Config {
     //
     // pcr_full_prob = 1.0 disables the feature (every turn full = the
     // pre-PCR behaviour, bit-for-bit). Never applied when training=false.
-    double pcr_full_prob   = 1.0;
-    int    pcr_cheap_sims  = 100;
+    //
+    // Defaults are ON (measured 2026-08-03, see cpp_selfplay_notes.md): equal
+    // strength at the 800-sim training budget for 1.89x less wall-clock.
+    // cheap_sims is absolute, not a fraction of num_simulations -- 160 is 1/5
+    // of the production 800, matching KataGo's annealed ratio. Re-tune it if
+    // num_simulations changes. These four values must stay in sync with
+    // bindings.cpp, selfplay_cpp.py and cpp_train_loop.py.
+    double pcr_full_prob   = 0.25;
+    int    pcr_cheap_sims  = 160;
     bool   pcr_cheap_noise = false;  // Dirichlet noise on cheap turns too
 };
 

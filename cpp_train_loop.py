@@ -67,9 +67,10 @@ def main() -> None:
     p.add_argument("--mcts-solver-max-total-walls", type=int, default=0)
     p.add_argument("--mcts-solver-node-limit", type=int, default=20_000)
     p.add_argument("--mcts-solver-time-limit-s", type=float, default=0.02)
-    # Playout cap randomization; see selfplay_cpp.py for the full explanation.
-    p.add_argument("--pcr-full-prob", type=float, default=1.0)
-    p.add_argument("--pcr-cheap-sims", type=int, default=100)
+    # Playout cap randomization, on by default; --pcr-full-prob 1.0 disables it.
+    # See selfplay_cpp.py for the full explanation.
+    p.add_argument("--pcr-full-prob", type=float, default=0.25)
+    p.add_argument("--pcr-cheap-sims", type=int, default=160)
     p.add_argument("--pcr-cheap-noise", action="store_true")
     p.add_argument("--abandon-stragglers-below", type=int, default=48,
                    help="forwarded to selfplay_cpp.py --abandon-stragglers-below "

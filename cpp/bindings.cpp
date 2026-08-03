@@ -258,8 +258,8 @@ PYBIND11_MODULE(quoridor_cpp, m) {
              py::arg("mcts_solver_max_total_walls") = 0,
              py::arg("mcts_solver_node_limit") = 20'000,
              py::arg("mcts_solver_time_limit_s") = 0.02,
-             py::arg("pcr_full_prob") = 1.0,
-             py::arg("pcr_cheap_sims") = 100,
+             py::arg("pcr_full_prob") = 0.25,
+             py::arg("pcr_cheap_sims") = 160,
              py::arg("pcr_cheap_noise") = false)
         .def("start", &SelfPlayManager::start, py::arg("total_games"),
              "Spawn worker threads and begin playing total_games games.")

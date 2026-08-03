@@ -161,7 +161,7 @@ def main() -> None:
                    help="safety cap on wall-clock seconds for in-tree MCTS leaf "
                         "solves; a timed-out attempt falls back to a normal NN "
                         "eval leaf for that node")
-    p.add_argument("--pcr-full-prob", type=float, default=1.0,
+    p.add_argument("--pcr-full-prob", type=float, default=0.25,
                    help="playout cap randomization (KataGo): probability that a "
                         "turn is a FULL turn (--sims simulations, Dirichlet "
                         "noise, position recorded as training data). The rest "
@@ -170,8 +170,8 @@ def main() -> None:
                         "correlated policy samples for more finished games per "
                         "unit compute, which is what the value head learns from "
                         "(every position in a game shares one value target). "
-                        "1.0 disables it (KataGo used 0.25)")
-    p.add_argument("--pcr-cheap-sims", type=int, default=100,
+                        "Pass 1.0 to disable (pre-PCR behaviour)")
+    p.add_argument("--pcr-cheap-sims", type=int, default=160,
                    help="simulations on cheap turns; only used when "
                         "--pcr-full-prob < 1. Must stay high enough that the "
                         "game is still played well: weak unrecorded moves make "
