@@ -152,7 +152,20 @@ fetch on demand.)
   - Raw loss is not comparable across arms: PCR 1.589 vs control 1.408 at cycle 220, while value_accuracy is identical (0.8520 vs 0.8506). Less redundant data fits worse at equal quality.
 - **Diversity:** PCR's retained positions are 71.1% distinct vs control's 56.4% (cycle 190). But control produces more distinct positions per second (297 vs 189) — PCR does not win on unique-data throughput. Both arms ran `--games 2048`, i.e. the same ~2000 independent game outcomes per cycle; PCR just bought them at half price. Games, not positions, are the unit.
 
+## BUFFER_CYCLES 30 -> 60 under PCR, and the compute-matched confirmation (2026-08-03)
+- PCR records ~4x fewer positions per cycle, so a 30-cycle buffer held **1.93M positions vs control's 8.47M** while `TRAIN_POSITIONS_PER_CYCLE` stayed at 1,024,000 — i.e. **53% of the buffer resampled per cycle against control's 12%**, ~4.4x more repetition per position.
+- Three defensible invariants give answers 4x apart, which is why this needed deciding rather than computing: match **games** in buffer -> 30 (both arms run `--games 2048`, so 30 cycles already holds the same 61,440 games); match **wall-clock span** of training history -> ~57; match **positions** -> ~132. Chose **60** (span-matched, halves resampling to 27%, cheap).
+- Train time scales with buffer size: `train_s ~= 43 + 6.3 * millions_of_positions` (fitted on 96.3s @ 8.47M and 55.1s @ 1.93M, confirmed by 94.7s on a seeded control-sized buffer). At 60 cycles PCR train went 55s -> 72s, cycle 177s -> 199s, so the per-cycle speedup drops ~2.01x -> ~1.79x. Restoring control's full position count (132 cycles) would have cost ~20% of what PCR bought.
+- **Continuation, cycles 221-250 at BUFFER_CYCLES=60** (buffer verified at 3,856,148 positions across 60 cycles, all PCR-generated): 30 cycles in 1.66h, bringing the PCR lineage to **4.79h cumulative vs control's 5.91h**.
+- **Result, 3-way at sims=800, 800 games/pair:**
+  - **pcr@250 vs ctrl@220: 67.8% (+/-1.8%, z=+10.04) = +163 Elo, on 81% of the compute.** Adoption is now measured, not inferred.
+  - pcr@250 vs pcr@220: 78.1% (z=+15.87) — ~7.4 Elo/cycle over those 30 cycles, vs ~4.2 Elo/cycle over 160-220.
+  - pcr@220 vs ctrl@220: 51.6% (z=+0.92), replicating the earlier 51.2% at a different seed and game count. The matched-cycle tie was solid.
+- **The buffer change is NOT attributed.** pcr@250's gain confounds "60-cycle buffer" with "30 more cycles". 60 clearly did not hurt, but whether it beats 30 is unmeasured. Merged on that basis.
+- **Training metrics were flat across 221-250 while strength rose sharply** — loss stuck at ~1.63, `value_accuracy` 0.8520 -> 0.8376. This is the expected AlphaZero signature (the data distribution moves with the policy, so loss is measured against a target that keeps getting harder) and is NOT evidence of a stalled run. Do not read flat/rising loss as a regression here; only the tournament answers it.
+
 ## Next steps (deferred by user)
-- Equal-compute confirmation: run the PCR lineage to ~cycle 274 (~114 cycles, matching control's 5.91h) and re-run the sims=800 head-to-head with more games to tighten the interval.
+- **Attribute the buffer change**: fork `models_9x9_pcr` at cycle 220, run 30 cycles at `BUFFER_CYCLES=30`, and put it head-to-head against pcr@250 (which had 60). ~1.5h. This is the only thing that separates "60 helped" from "30 more cycles helped".
+- Tighten the compute-matched picture further by running PCR to ~cycle 274 (~114 cycles = control's 5.91h) if an exactly-equal-compute number is ever wanted.
 - Gumbel MCTS root-only modification — after infra proves out on the target PC.
 - Consider re-measuring TT hit-rate/depth cutoff (`tools/_measure_opening_overlap.py`) periodically across training cycles since the useful depth grows as the network converges (see feasibility section above).

@@ -103,12 +103,17 @@ board sizes. Any change to game rules must be made in both places and re-verifie
 - **Playout cap randomization is ON by default in the C++ self-play** (`pcr_full_prob` 0.25,
   `pcr_cheap_sims` 160): 25% of turns get the full `--sims` budget, Dirichlet noise and a recorded
   training row; the other 75% are cheap unrecorded moves that only exist to finish the game. It
-  buys ~1.9x wall-clock at equal strength. Those two values live in **four** places that must be
-  changed together — `cpp/selfplay.hpp`, `cpp/bindings.cpp`, `selfplay_cpp.py`,
-  `cpp_train_loop.py`. `--pcr-full-prob 1.0` restores the pre-PCR behaviour. Two consequences worth
-  knowing: recorded rows are sparse so `plies_to_end` counts *real* game plies rather than recorded
-  rows, and the P1 win rate sits ~9 points higher than without PCR (measured, not a bug). See
-  [markdown_notes/cpp_selfplay_notes.md](markdown_notes/cpp_selfplay_notes.md).
+  buys ~1.8-1.9x wall-clock; measured at +163 Elo over a non-PCR arm while spending 81% of its
+  compute. Those two values live in **four** places that must be changed together —
+  `cpp/selfplay.hpp`, `cpp/bindings.cpp`, `selfplay_cpp.py`, `cpp_train_loop.py`.
+  `--pcr-full-prob 1.0` restores the pre-PCR behaviour. It is paired with `train.py`'s
+  `BUFFER_CYCLES = 60` (raised from 30 because PCR records ~4x fewer positions per cycle) — change
+  one and reconsider the other. Two consequences worth knowing: recorded rows are sparse so
+  `plies_to_end` counts *real* game plies rather than recorded rows, and the P1 win rate sits ~9
+  points higher than without PCR (measured, not a bug). Note also that **flat or rising training
+  loss is not a regression signal** under PCR — judge changes with `tournament_cpp.py` at the
+  *training* sim budget, since evaluating at the cheap default of 100 sims overstated PCR by
+  ~21 Elo. See [markdown_notes/cpp_selfplay_notes.md](markdown_notes/cpp_selfplay_notes.md).
 - `mcts.py` (`MCTSAgent`) implements PUCT search against an `Evaluator` interface (NN or rollout),
   used by the pure-Python paths (`train.py`, `tournament.py`).
 - `dual_network.py`'s `DualNetwork` is the policy+value ResNet (optional KataGo-style global
