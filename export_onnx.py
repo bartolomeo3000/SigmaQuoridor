@@ -21,11 +21,15 @@ EXPORTS = [
     ("runs/models_7x7/best.pt",              "docs/models/best.onnx"),
     ("runs/models_7x7/supervised.pt",         "docs/models/supervised.onnx"),
     ("runs/models_7x7/supervised_extended.pt","docs/models/supervised_extended.onnx"),
-    # The served 9x9 net is the from-scratch lineage, which overtook the old
-    # heads best (cycle 56) in the v7 tournament -- 61.1% head-to-head, and
-    # rank 1 overall. Heads cycle 56 stays exported as checkpoints/cycle_0056
-    # below so the picker can still offer the previous best for comparison.
-    ("runs/models_9x9_scratch/best.pt",        "docs/models_9x9/best.onnx"),
+    # The served 9x9 net is the PCR lineage (forked off scratch at cycle 160).
+    # Its cycle 220 took rank 1 in the pcr_ab v3 tournament and beat the
+    # previously-served scratch 321 70.1% head-to-head over 600 games; best.pt
+    # here is the lineage head (cycle 250, the BUFFER_CYCLES=60 stretch).
+    # The two nets it displaced stay exported below so the picker can still
+    # offer them for comparison: scratch 321 and heads 56.
+    ("runs/models_9x9_pcr/best.pt",            "docs/models_9x9/best.onnx"),
+    ("runs/models_9x9_scratch/checkpoints/cycle_0321.pt",
+     "docs/models_9x9/checkpoints/scratch_0321.onnx"),
 ]
 
 # Dynamically add checkpoint exports.
@@ -41,6 +45,10 @@ if _ck_src.exists():
 # rather than all of them, to keep docs/ (served via GitHub Pages) reasonably
 # sized. Bump CKPT_STEP down (or add specific cycles to _ck_extra) if you
 # want a denser checkpoint history in the browser picker.
+# Three 9x9 lineages (heads, scratch, pcr) share docs/models_9x9/checkpoints/,
+# so bare cycle_NNNN.onnx belongs to this auto-glob alone; one-off exports from
+# another lineage go in with a lineage prefix (e.g. scratch_0321.onnx) to keep
+# two different nets from claiming the same filename.
 CKPT_STEP = 20
 _ck9_src = Path("runs/models_9x9_heads/checkpoints")
 _ck9_dst = Path("docs/models_9x9/checkpoints")

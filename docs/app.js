@@ -1264,12 +1264,14 @@ const MODEL_LIST_7X7 = [
 // in game.js). The pre-fix legacy checkpoints (≤ cycle 339) used the opposite
 // (real-frame) P2 convention, so serving them through the fixed JS would give a
 // vertically-scrambled P2 policy. They've been removed from this picker.
-// "best" is the from-scratch lineage's cycle 321, which beat the old heads
-// cycle 56 head-to-head (61.1% over 500 games) and took rank 1 in the v7
-// tournament; heads cycle 56 is kept alongside it as the previous best.
+// "best" is the PCR lineage (forked off scratch at cycle 160), whose cycle 220
+// beat scratch 321 70.1% head-to-head over 600 games and took rank 1 in the
+// pcr_ab v3 tournament; best.onnx is that lineage's head, cycle 250. The two
+// nets it displaced are kept alongside it for comparison.
 const MODEL_LIST_9X9 = [
-  { label: 'best · scratch 321',  path: './models_9x9/best.onnx' },
-  { label: 'previous · heads 56', path: './models_9x9/checkpoints/cycle_0056.onnx' },
+  { label: 'best · pcr 250',         path: './models_9x9/best.onnx' },
+  { label: 'previous · scratch 321', path: './models_9x9/checkpoints/scratch_0321.onnx' },
+  { label: 'older · heads 56',       path: './models_9x9/checkpoints/cycle_0056.onnx' },
 ];
 
 function currentModelList() {
@@ -1488,11 +1490,12 @@ function updateAgentRowVisibility(side) {
 }
 
 // './models_9x9/best.onnx' -> 'best';
-// './models_9x9/checkpoints/cycle_0056.onnx' -> 'cycle 56'
+// './models_9x9/checkpoints/cycle_0056.onnx'   -> 'cycle 56';
+// './models_9x9/checkpoints/scratch_0321.onnx' -> 'scratch 321'
 function modelShortLabel(path) {
   const base = String(path).split('/').pop().replace(/\.onnx$/, '');
-  const m    = base.match(/^cycle_0*(\d+)$/);
-  return m ? `cycle ${m[1]}` : base;
+  const m    = base.match(/^([a-z]+)_0*(\d+)$/);
+  return m ? `${m[1]} ${m[2]}` : base;
 }
 
 // True when both sides are the net on DIFFERENT checkpoints — the headline
