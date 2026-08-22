@@ -178,8 +178,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--walls", type=int, default=None)
     p.add_argument("--max-moves", type=int, default=None)
     p.add_argument("--threads", type=int, default=8, help="MCTS worker threads")
-    p.add_argument("--parallel", type=int, default=128, help="concurrent games")
-    p.add_argument("--max-batch", type=int, default=256)
+    p.add_argument("--parallel", type=int, default=None,
+                   help="Concurrent games (default: --games, i.e. a whole pair at once)")
+    p.add_argument("--max-batch", type=int, default=None,
+                   help="Max NN eval batch (default: --games)")
     p.add_argument("--flush-us", type=int, default=500)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="", help="Optional CSV path for summary results")
@@ -215,6 +217,12 @@ def parse_args() -> argparse.Namespace:
     for name, default in _INHERITABLE_DEFAULTS.items():
         if getattr(args, name) is None:
             setattr(args, name, default)
+    # A pair is --games games, so running all of them at once is the throughput
+    # ceiling; batch to match. Resolved after --games so --series inheritance counts.
+    if args.parallel is None:
+        args.parallel = args.games
+    if args.max_batch is None:
+        args.max_batch = args.games
     return args
 
 
